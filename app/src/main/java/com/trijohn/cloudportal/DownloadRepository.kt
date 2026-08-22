@@ -52,6 +52,7 @@ data class CloudDownload(
     val totalBytes: Long,
     val extractedDirectory: String? = null,
     val extractedFileCount: Int = 0,
+    val completedAtMillis: Long = 0L,
 ) {
     val progress: Float?
         get() = if (totalBytes > 0L) {
@@ -110,6 +111,7 @@ class DownloadRepository(private val context: Context) {
             val statusIndex = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)
             val downloadedIndex = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
             val totalIndex = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+            val lastModifiedIndex = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LAST_MODIFIED_TIMESTAMP)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idIndex)
@@ -130,6 +132,9 @@ class DownloadRepository(private val context: Context) {
                     totalBytes = cursor.getLong(totalIndex),
                     extractedDirectory = stored.extractedDirectory,
                     extractedFileCount = stored.extractedFileCount,
+                    completedAtMillis = stored.completedAtMillis.takeIf { it > 0L }
+                        ?: cursor.getLong(lastModifiedIndex).takeIf { managerState == DownloadState.Complete }
+                        ?: 0L,
                 )
             }
         }
@@ -150,6 +155,7 @@ class DownloadRepository(private val context: Context) {
                 totalBytes = -1L,
                 extractedDirectory = stored.extractedDirectory,
                 extractedFileCount = stored.extractedFileCount,
+                completedAtMillis = stored.completedAtMillis,
             )
         }
     }
@@ -178,7 +184,11 @@ class DownloadRepository(private val context: Context) {
     fun retryExtraction(download: CloudDownload): Boolean {
         if (!ArchiveFilePolicy.isZip(download.fileName, download.mimeType)) return false
         val updated = updateSavedDownload(download.id) {
-            it.copy(extractionState = ExtractionState.Pending, extractedFileCount = 0)
+            it.copy(
+                extractionState = ExtractionState.Pending,
+                extractedFileCount = 0,
+                completedAtMillis = 0L,
+            )
         } ?: return false
         scheduleArchiveExtraction(updated.id, ExistingWorkPolicy.REPLACE)
         return true
@@ -275,6 +285,7 @@ class DownloadRepository(private val context: Context) {
                     extractionState = ExtractionState.Extracted,
                     extractedDirectory = relativeDirectory,
                     extractedFileCount = entryCount,
+                    completedAtMillis = System.currentTimeMillis(),
                 )
             }
             entryCount
@@ -350,6 +361,7 @@ class DownloadRepository(private val context: Context) {
             extractionState = if (isArchive) ExtractionState.Pending else ExtractionState.NotArchive,
             extractedDirectory = if (isArchive) createExtractionDirectory(fileName) else null,
             extractedFileCount = 0,
+            completedAtMillis = 0L,
         )
         synchronized(RECORD_LOCK) {
             val downloads = readSavedDownloads().filterNot { it.id == id } + saved
@@ -384,6 +396,7 @@ class DownloadRepository(private val context: Context) {
                         extractionState = ExtractionState.Pending,
                         extractedDirectory = createExtractionDirectory(fileName),
                         extractedFileCount = 0,
+                        completedAtMillis = 0L,
                     )
                 }
             }
@@ -429,6 +442,7 @@ class DownloadRepository(private val context: Context) {
             ?.let(Uri::decode)
             ?: if (isArchive) createExtractionDirectory(fileName) else null
         val extractedFileCount = pieces.getOrNull(5)?.toIntOrNull() ?: 0
+        val completedAtMillis = pieces.getOrNull(6)?.toLongOrNull() ?: 0L
         return SavedDownload(
             id,
             fileName,
@@ -436,6 +450,7 @@ class DownloadRepository(private val context: Context) {
             extractionState,
             extractedDirectory,
             extractedFileCount,
+            completedAtMillis,
         )
     }
 
@@ -448,6 +463,7 @@ class DownloadRepository(private val context: Context) {
                 saved.extractionState.name,
                 saved.extractedDirectory?.let(Uri::encode).orEmpty(),
                 saved.extractedFileCount.toString(),
+                saved.completedAtMillis.toString(),
             ).joinToString(SEPARATOR)
         }
         preferences.edit(commit = true) { putStringSet(KEY_DOWNLOADS, records) }
@@ -476,6 +492,7 @@ class DownloadRepository(private val context: Context) {
         val extractionState: ExtractionState,
         val extractedDirectory: String?,
         val extractedFileCount: Int,
+        val completedAtMillis: Long,
     ) {
         fun displayState(managerState: DownloadState): DownloadState {
             if (managerState != DownloadState.Complete) return managerState

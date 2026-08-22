@@ -15,12 +15,12 @@ Thay vì mở trình duyệt, tìm lại trang iCloud và đăng nhập từ đ�
 - Tải ảnh và tệp về thiết bị mà không phải chuyển sang trình duyệt khác.
 - Tự động giải nén gói ZIP khi tải nhiều ảnh cùng lúc.
 - Chạm **Xem ảnh** để mở ngay những ảnh vừa tải trong Files.
-- Theo dõi các nội dung đã tải tại màn hình **Tải về**.
+- Theo dõi nội dung đã tải, thời điểm hoàn tất và nhận biết tệp mới tại màn hình **Tải về**.
 - Chủ động xóa phiên iCloud khỏi thiết bị bất cứ lúc nào.
 
 ## Trải nghiệm được thiết kế cho Android
 
-Cloud Portal tập trung vào không gian hiển thị nội dung. Khi vào iCloud, giao diện web được mở rộng tối đa và thanh điều khiển nhỏ nằm riêng ở cạnh dưới, không che các nút thao tác khi bạn chọn nhiều ảnh.
+Cloud Portal tập trung vào không gian hiển thị nội dung. Trang chủ tối giản có chuyển động nhẹ và đóng vai trò menu truy cập nhanh; khi mở ứng dụng, iCloud vẫn là trải nghiệm chính. Giao diện web được mở rộng tối đa và thanh điều khiển nhỏ nằm riêng ở cạnh dưới, không che các nút thao tác khi bạn chọn nhiều ảnh.
 
 Bạn có thể quay lại, tải lại trang hoặc chuyển nhanh giữa Ảnh, Drive và Ghi chú mà không cần rời khỏi màn hình đang dùng.
 

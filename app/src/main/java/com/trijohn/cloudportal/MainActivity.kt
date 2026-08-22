@@ -16,6 +16,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +78,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -142,7 +155,7 @@ private fun CloudPortalApp(session: ICloudWebSession) {
     val context = LocalContext.current
     val downloads = remember { DownloadRepository(context) }
     val snackbarHostState = remember { SnackbarHostState() }
-    var selectedSectionName by rememberSaveable { mutableStateOf(AppSection.Home.name) }
+    var selectedSectionName by rememberSaveable { mutableStateOf(AppSection.Browser.name) }
     val selectedSection = AppSection.valueOf(selectedSectionName)
     var message by remember { mutableStateOf<String?>(null) }
     var pendingFileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
@@ -269,65 +282,78 @@ private fun HomeScreen(
     onOpenBrowser: () -> Unit,
     onOpenDownloads: () -> Unit,
 ) {
+    var revealed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { revealed = true }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding(),
-        contentPadding = PaddingValues(start = 20.dp, top = 18.dp, end = 20.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        contentPadding = PaddingValues(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(28.dp),
     ) {
-        item { BrandHeader(hasSession) }
-        item { HeroCard(onOpenBrowser) }
         item {
-            SectionHeader(
-                title = "Ứng dụng iCloud",
-                subtitle = "Mở bên trong Cloud Portal, không chuyển sang Chrome",
-            )
+            HomeReveal(revealed, delayMillis = 0) { MinimalBrandHeader(hasSession) }
         }
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                cloudServices.forEach { service ->
-                    ServiceTile(
-                        modifier = Modifier.weight(1f),
-                        service = service,
-                        onClick = { onOpenService(service.url) },
-                    )
-                }
-            }
+            HomeReveal(revealed, delayMillis = 70) { PrimaryCloudEntry(hasSession, onOpenBrowser) }
         }
-        item { QuickActionCard(hasSession, onOpenBrowser, onOpenDownloads) }
-        item { PrivacyNote() }
+        item {
+            HomeReveal(revealed, delayMillis = 140) { MinimalServiceList(onOpenService) }
+        }
+        item {
+            HomeReveal(revealed, delayMillis = 210) { DownloadShortcut(onOpenDownloads) }
+        }
+        item {
+            HomeReveal(revealed, delayMillis = 280) { PrivacyNote() }
+        }
     }
 }
 
 @Composable
-private fun BrandHeader(hasSession: Boolean) {
+private fun HomeReveal(
+    visible: Boolean,
+    delayMillis: Int,
+    content: @Composable () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(durationMillis = 420, delayMillis = delayMillis)) +
+            slideInVertically(
+                animationSpec = tween(durationMillis = 480, delayMillis = delayMillis),
+                initialOffsetY = { it / 5 },
+            ),
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun MinimalBrandHeader(hasSession: Boolean) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Brush.linearGradient(listOf(Color(0xFF2388FF), Color(0xFF7B61FF))))
-                .semantics { contentDescription = "Cloud Portal" },
-            contentAlignment = Alignment.Center,
+        Surface(
+            modifier = Modifier.size(36.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            shape = RoundedCornerShape(12.dp),
         ) {
-            Text("☁", color = Color.White, fontSize = 24.sp)
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.semantics { contentDescription = "Cloud Portal" },
+            ) {
+                Text("☁", fontSize = 19.sp)
+            }
         }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Cloud Portal", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black)
-            Text(
-                "iCloud riêng trên Pixel",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Spacer(Modifier.width(11.dp))
+        Text(
+            "Cloud Portal",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
         SessionBadge(hasSession)
     }
 }
@@ -335,177 +361,252 @@ private fun BrandHeader(hasSession: Boolean) {
 @Composable
 private fun SessionBadge(hasSession: Boolean) {
     Surface(
-        color = if (hasSession) Color(0xFF1AA981).copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = Color.Transparent,
         shape = RoundedCornerShape(50),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            modifier = Modifier.padding(start = 8.dp, top = 5.dp, bottom = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 Modifier
-                    .size(7.dp)
+                    .size(6.dp)
                     .background(if (hasSession) Color(0xFF1AA981) else Color(0xFF8A909F), CircleShape),
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                if (hasSession) "Đã lưu phiên" else "Chưa đăng nhập",
+                if (hasSession) "Đã kết nối" else "Chưa kết nối",
                 style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
 }
 
 @Composable
-private fun HeroCard(onClick: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        shape = RoundedCornerShape(30.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    Brush.linearGradient(
-                        listOf(Color(0xFF0E5CE5), Color(0xFF5B44D7), Color(0xFF8C5EEA)),
-                    ),
-                )
-                .padding(24.dp),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Surface(color = Color.White.copy(alpha = 0.15f), shape = RoundedCornerShape(50)) {
-                    Text(
-                        "WEBVIEW RIÊNG • COOKIE BỀN VỮNG",
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                        color = Color.White.copy(alpha = 0.9f),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                Text(
-                    "iCloud của bạn,\nngay trên Pixel.",
-                    color = Color.White,
-                    fontSize = 31.sp,
-                    lineHeight = 35.sp,
-                    fontWeight = FontWeight.Black,
-                )
-                Text(
-                    "Đăng nhập một lần. Cloud Portal giữ cookie và trạng thái web trong vùng dữ liệu riêng của app.",
-                    color = Color.White.copy(alpha = 0.84f),
-                    style = MaterialTheme.typography.bodyMedium,
-                    lineHeight = 20.sp,
-                )
-                Surface(color = Color.White, shape = RoundedCornerShape(15.dp)) {
-                    Text(
-                        "Mở iCloud  →",
-                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
-                        color = Color(0xFF263B88),
-                        fontWeight = FontWeight.Black,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ServiceTile(modifier: Modifier, service: CloudService, onClick: () -> Unit) {
-    Card(
-        modifier = modifier
-            .height(142.dp)
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        shape = RoundedCornerShape(22.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(13.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Surface(
-                modifier = Modifier.size(42.dp),
-                color = service.accent.copy(alpha = 0.16f),
-                shape = RoundedCornerShape(13.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(service.symbol, color = service.accent, fontSize = 24.sp, fontWeight = FontWeight.Black)
-                }
-            }
-            Column {
-                Text(service.name, fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleSmall)
-                Text(
-                    service.description,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun QuickActionCard(hasSession: Boolean, onOpenBrowser: () -> Unit, onOpenDownloads: () -> Unit) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+private fun PrimaryCloudEntry(hasSession: Boolean, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainer,
         shape = RoundedCornerShape(24.dp),
     ) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(15.dp),
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    modifier = Modifier.size(42.dp),
-                    color = Color(0xFF1AA981).copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(if (hasSession) "✓" else "↗", color = Color(0xFF1AA981), fontWeight = FontWeight.Black)
-                    }
-                }
-                Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        if (hasSession) "Phiên iCloud đang được giữ" else "Sẵn sàng đăng nhập iCloud",
-                        fontWeight = FontWeight.Black,
+                        "KHÔNG GIAN CỦA BẠN",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.1.sp,
                     )
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        if (hasSession) "Mở lại app sẽ tiếp tục phiên hiện tại" else "Apple ID và 2FA nhập trực tiếp trên trang Apple",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        "Ảnh, tệp &\nghi chú.",
+                        fontSize = 27.sp,
+                        lineHeight = 31.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.4).sp,
                     )
                 }
+                PortalArtwork(Modifier.size(108.dp))
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(modifier = Modifier.weight(1f), onClick = onOpenBrowser, shape = RoundedCornerShape(14.dp)) {
-                    Text("Tiếp tục iCloud", fontWeight = FontWeight.Bold)
-                }
-                OutlinedButton(
-                    modifier = Modifier.weight(1f),
-                    onClick = onOpenDownloads,
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text("Tệp đã tải", fontWeight = FontWeight.Bold)
+            Text(
+                if (hasSession) {
+                    "Phiên iCloud đã sẵn sàng để tiếp tục."
+                } else {
+                    "Đăng nhập để bắt đầu trên thiết bị này."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Button(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                onClick = onClick,
+                shape = RoundedCornerShape(15.dp),
+            ) {
+                Text(
+                    if (hasSession) "Tiếp tục với iCloud" else "Đăng nhập iCloud",
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PortalArtwork(modifier: Modifier = Modifier) {
+    val motion = rememberInfiniteTransition(label = "portal-art")
+    val rotation by motion.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 14_000, easing = LinearEasing),
+        ),
+        label = "portal-orbit",
+    )
+    val floating by motion.animateFloat(
+        initialValue = -4f,
+        targetValue = 4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2_400),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "portal-float",
+    )
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = Color(0xFF7B61FF)
+    val centerColor = MaterialTheme.colorScheme.primaryContainer
+    val centerContent = MaterialTheme.colorScheme.onPrimaryContainer
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    listOf(primary.copy(alpha = 0.16f), Color.Transparent),
+                ),
+                radius = size.minDimension * 0.48f,
+            )
+            drawCircle(
+                color = primary.copy(alpha = 0.12f),
+                radius = size.minDimension * 0.37f,
+                style = Stroke(width = 1.2.dp.toPx()),
+            )
+            drawArc(
+                color = primary,
+                startAngle = rotation,
+                sweepAngle = 82f,
+                useCenter = false,
+                style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round),
+            )
+            drawArc(
+                color = secondary.copy(alpha = 0.75f),
+                startAngle = -rotation * 0.7f,
+                sweepAngle = 48f,
+                useCenter = false,
+                style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round),
+            )
+        }
+        Surface(
+            modifier = Modifier
+                .size(54.dp)
+                .graphicsLayer { translationY = floating },
+            color = centerColor,
+            contentColor = centerContent,
+            shape = RoundedCornerShape(18.dp),
+            shadowElevation = 5.dp,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("☁", fontSize = 27.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MinimalServiceList(onOpenService: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            "DỊCH VỤ",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.2.sp,
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Column {
+                cloudServices.forEachIndexed { index, service ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenService(service.url) }
+                            .padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(36.dp),
+                            color = service.accent.copy(alpha = 0.13f),
+                            contentColor = service.accent,
+                            shape = RoundedCornerShape(11.dp),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(service.symbol, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Spacer(Modifier.width(13.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(service.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                service.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                        Text(
+                            "›",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Light,
+                        )
+                    }
+                    if (index != cloudServices.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 65.dp),
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                        )
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DownloadShortcut(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("↓", color = MaterialTheme.colorScheme.primary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(13.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Tệp đã tải", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Xem ảnh và tài liệu đã lưu trên thiết bị",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 24.sp)
     }
 }
 
 @Composable
 private fun PrivacyNote() {
-    Row(modifier = Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.Top) {
-        Text("⌾", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(6.dp)
+                .background(Color(0xFF1AA981), CircleShape),
+        )
         Spacer(Modifier.width(9.dp))
         Text(
-            "Cookie nằm trong sandbox của Cloud Portal và không được sao lưu. Xóa dữ liệu app hoặc dùng mục Phiên sẽ đăng xuất hoàn toàn.",
-            style = MaterialTheme.typography.bodySmall,
+            "Phiên iCloud chỉ được lưu trên thiết bị này.",
+            style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            lineHeight = 18.sp,
         )
     }
 }
@@ -717,10 +818,12 @@ private fun activeCloudService(url: String): String = when {
 private fun DownloadsScreen(repository: DownloadRepository, onMessage: (String) -> Unit) {
     var downloads by remember { mutableStateOf(repository.listDownloads()) }
     var refreshNow by remember { mutableIntStateOf(0) }
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
 
     LaunchedEffect(refreshNow) {
         while (true) {
             downloads = repository.listDownloads()
+            nowMillis = System.currentTimeMillis()
             delay(1_500)
         }
     }
@@ -761,6 +864,7 @@ private fun DownloadsScreen(repository: DownloadRepository, onMessage: (String) 
             items(downloads, key = { it.id }) { download ->
                 DownloadCard(
                     download = download,
+                    nowMillis = nowMillis,
                     onOpen = {
                         if (!repository.openDownload(download)) {
                             onMessage("Không thể mở tệp hoặc thư mục ảnh trong Downloads.")
@@ -819,11 +923,26 @@ private fun EmptyDownloads() {
 @Composable
 private fun DownloadCard(
     download: CloudDownload,
+    nowMillis: Long,
     onOpen: () -> Unit,
     onRetryExtraction: () -> Unit,
 ) {
+    val showsCompletionTime = download.state in setOf(DownloadState.Complete, DownloadState.Extracted)
+    val completionLabel = if (showsCompletionTime) {
+        DownloadTimePolicy.label(download.completedAtMillis, nowMillis)
+    } else {
+        null
+    }
+    val isRecent = showsCompletionTime && DownloadTimePolicy.isRecent(download.completedAtMillis, nowMillis)
+
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isRecent) {
+                Color(0xFF1AA981).copy(alpha = 0.11f)
+            } else {
+                MaterialTheme.colorScheme.surfaceContainer
+            },
+        ),
         shape = RoundedCornerShape(20.dp),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -845,11 +964,37 @@ private fun DownloadCard(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        download.stateLabel(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = download.state.stateColor(),
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            download.stateLabel(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = download.state.stateColor(),
+                        )
+                        if (isRecent) {
+                            Spacer(Modifier.width(7.dp))
+                            Surface(
+                                color = Color(0xFF1AA981),
+                                contentColor = Color.White,
+                                shape = RoundedCornerShape(50),
+                            ) {
+                                Text(
+                                    "MỚI",
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                    fontSize = 9.sp,
+                                    lineHeight = 11.sp,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 0.7.sp,
+                                )
+                            }
+                        }
+                    }
+                    completionLabel?.let { label ->
+                        Text(
+                            "Hoàn tất • $label",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 when (download.state) {
                     DownloadState.Complete -> {
