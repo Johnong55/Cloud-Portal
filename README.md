@@ -1,66 +1,75 @@
-# Cloud Portal cho Android
+# Cloud Portal
 
-Cloud Portal 2.2 biến iCloud.com thành trải nghiệm ứng dụng trên Pixel: trang Apple chạy trong WebView riêng, cookie và Web Storage được giữ trong sandbox của app, URL cuối được khôi phục khi mở lại. Không còn chuyển sang Chrome khi dùng Photos, Drive hoặc Notes.
+### iCloud của bạn, tiện hơn trên Android.
 
-## Chức năng
+Cloud Portal là ứng dụng Android dành cho những người từng sử dụng iPhone hoặc vẫn còn ảnh và tài liệu trên iCloud. Ứng dụng đưa những dịch vụ iCloud cần thiết vào một giao diện gọn gàng, dễ dùng và phù hợp với màn hình điện thoại Android.
 
-- Giao diện native gồm **Trang chủ**, **iCloud**, **Tải về** và **Phiên**.
-- Mở iCloud Photos, iCloud Drive và Notes ngay bên trong app.
-- Chế độ iCloud toàn màn hình: thanh hệ thống và điều hướng app tự ẩn; bottom bar gọn ở cạnh dưới cho phép quay lại, tải lại và chuyển dịch vụ nhanh mà không che thanh thao tác Select của iCloud Photos.
-- Cookie đăng nhập được ghi xuống bộ nhớ bền vững bằng `CookieManager.flush()`.
-- DOM Storage lưu trạng thái web mà iCloud.com cần; app nhớ trang Apple cuối cùng.
-- Upload bằng trình chọn tệp Android, không cấp quyền đọc toàn bộ bộ nhớ.
-- Download bằng Android Download Manager, kèm User-Agent và cookie của URL Apple khi cần xác thực.
-- ZIP tạo ra khi tải nhiều ảnh được WorkManager tự giải nén an toàn vào `Downloads/Cloud Portal/<tên gói>/`; nút **Xem ảnh** mở thẳng ảnh kết quả trong Files.
-- Danh sách tiến độ tải xuống và mở tệp đã tải ngay trong app.
-- Nút xóa đồng thời cookie, Web Storage, cache, lịch sử và phiên iCloud.
+Thay vì mở trình duyệt, tìm lại trang iCloud và đăng nhập từ đầu, bạn có thể xem ảnh, truy cập tệp, tải nội dung và quản lý phiên ngay trong một ứng dụng duy nhất.
 
-## Bảo mật phiên
+## Bạn có thể làm gì với Cloud Portal?
 
-Phiên đăng nhập nằm tại vùng dữ liệu riêng của package `com.trijohn.cloudportal`; backup và device transfer đều bị tắt. Mã ứng dụng:
+- Xem và quản lý **Ảnh iCloud** trên điện thoại Android.
+- Truy cập tệp trong **iCloud Drive**.
+- Mở và sử dụng **Ghi chú iCloud**.
+- Giữ trạng thái đăng nhập để tiếp tục công việc ở lần mở sau.
+- Tải ảnh và tệp về thiết bị mà không phải chuyển sang trình duyệt khác.
+- Tự động giải nén gói ZIP khi tải nhiều ảnh cùng lúc.
+- Chạm **Xem ảnh** để mở ngay những ảnh vừa tải trong Files.
+- Theo dõi các nội dung đã tải tại màn hình **Tải về**.
+- Chủ động xóa phiên iCloud khỏi thiết bị bất cứ lúc nào.
 
-- chỉ cho top-level WebView mở HTTPS thuộc các domain Apple đã allowlist;
-- chặn chứng chỉ TLS lỗi, HTTP mixed content và file access;
-- bật Android Safe Browsing;
-- không dùng `addJavascriptInterface` hay máy chủ trung gian; đoạn JavaScript tương thích cục bộ chỉ sửa lỗi chiều cao `0px` của giao diện iCloud và không đọc dữ liệu tài khoản;
-- không ghi cookie, Apple ID, mật khẩu hoặc mã 2FA vào log/SharedPreferences.
+## Trải nghiệm được thiết kế cho Android
 
-WebView vẫn phải bật JavaScript, DOM Storage và third-party cookies vì iCloud.com là web app và đăng nhập đi qua nhiều subdomain Apple. Khi tải tệp, cookie phù hợp được chuyển trực tiếp cho Download Manager của Android để gửi tới URL Apple; cookie không được lưu vào lịch sử download của app.
+Cloud Portal tập trung vào không gian hiển thị nội dung. Khi vào iCloud, giao diện web được mở rộng tối đa và thanh điều khiển nhỏ nằm riêng ở cạnh dưới, không che các nút thao tác khi bạn chọn nhiều ảnh.
 
-> Apple quyết định thời hạn session và có thể yêu cầu 2FA lại. Gỡ app, xóa dữ liệu Android hoặc bấm **Phiên → Xóa cookie và đăng xuất** sẽ xóa phiên. App không và không nên lưu mật khẩu Apple ID dạng văn bản.
+Bạn có thể quay lại, tải lại trang hoặc chuyển nhanh giữa Ảnh, Drive và Ghi chú mà không cần rời khỏi màn hình đang dùng.
 
-## Vì sao vẫn dùng iCloud.com?
+Ứng dụng gồm bốn khu vực chính:
 
-Apple không cung cấp API công khai để app Android bên thứ ba duyệt thư viện **iCloud Photos** hoặc **iCloud Drive cá nhân**. CloudKit Web Services chỉ truy cập container của ứng dụng do nhà phát triển tạo, không phải kho Photos/Drive chung của tài khoản. Endpoint iCloud reverse-engineer có thể ngừng hoạt động bất cứ lúc nào và sẽ buộc app tự xử lý credential nhạy cảm.
+- **Trang chủ** — truy cập nhanh các dịch vụ iCloud thường dùng.
+- **iCloud** — không gian toàn màn hình để xem và quản lý nội dung.
+- **Tải về** — theo dõi tệp, xem trạng thái giải nén và mở ảnh đã tải.
+- **Phiên** — kiểm soát trạng thái đăng nhập và đăng xuất an toàn.
 
-Tham khảo chính thức:
+## Tải nhiều ảnh, không cần tự giải nén
 
-- [Apple: Use Photos on iCloud.com](https://support.apple.com/guide/icloud/photos-on-icloudcom-overview-mmbc402b84/icloud)
-- [Apple: Find and view files in iCloud Drive on iCloud.com](https://support.apple.com/guide/icloud/mmebf050837b/icloud)
-- [Android: CookieManager](https://developer.android.com/reference/android/webkit/CookieManager)
-- [Android: WebView security checklist](https://developer.android.com/privacy-and-security/security-tips#WebView)
-- [Android: WebChromeClient file chooser](https://developer.android.com/reference/android/webkit/WebChromeClient#onShowFileChooser(android.webkit.WebView,android.webkit.ValueCallback,android.webkit.WebChromeClient.FileChooserParams))
-- [Apple Developer: CloudKit JS](https://developer.apple.com/documentation/cloudkitjs)
+Khi iCloud đóng gói nhiều ảnh thành một tệp ZIP, Cloud Portal sẽ tự xử lý và đặt ảnh vào:
 
-## Build và cài lên Pixel
+```text
+Downloads/Cloud Portal/<tên gói ảnh>/
+```
 
-Yêu cầu: Android Studio hỗ trợ AGP 9.3, JDK 17+, Android SDK 37 và Android 10 (API 29) trở lên.
+Sau khi hoàn tất, nút **Xem ảnh** sẽ xuất hiện để bạn đi thẳng tới nội dung vừa tải. Tệp ZIP gốc vẫn được giữ lại trong Downloads để bạn có thể sao lưu hoặc sử dụng khi cần.
+
+## Quyền riêng tư
+
+Cloud Portal không yêu cầu bạn nhập mật khẩu Apple ID vào một biểu mẫu riêng và không gửi thông tin đăng nhập tới máy chủ trung gian. Phiên iCloud được giữ trong vùng dữ liệu riêng của ứng dụng trên thiết bị.
+
+Bạn có thể mở **Phiên → Xóa cookie và đăng xuất** để xóa trạng thái đăng nhập. Việc gỡ ứng dụng hoặc xóa dữ liệu ứng dụng trong Android cũng sẽ xóa phiên đã lưu.
+
+## Yêu cầu thiết bị
+
+- Android 10 trở lên.
+- Android System WebView và Chrome nên được cập nhật.
+- Kết nối Internet để sử dụng các dịch vụ iCloud.
+- Apple có thể yêu cầu xác thực hai yếu tố khi đăng nhập lại.
+
+## Dành cho nhà phát triển
+
+<details>
+<summary>Build và cài APK</summary>
+
+Yêu cầu JDK 17 và Android SDK 37.
 
 ```bash
-./gradlew test lint assembleDebug
+./gradlew test lintDebug assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-APK nằm tại `app/build/outputs/apk/debug/app-debug.apk`.
+APK debug được tạo tại `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Cách dùng
+</details>
 
-1. Mở app → **Ảnh**, **Drive** hoặc tab **iCloud**.
-2. Trong chế độ toàn màn hình, dùng bottom bar để xem domain Apple, quay lại, tải lại hoặc chạm nút iCloud để chuyển dịch vụ; đăng nhập và hoàn tất 2FA.
-3. Dùng giao diện iCloud.com để xem, chọn, upload hoặc download nội dung.
-4. Mở tab **Tải về** để theo dõi và mở tệp trong thư mục Downloads.
-5. Khi muốn đăng xuất hoàn toàn, mở **Phiên → Xóa cookie và đăng xuất**.
+## Tuyên bố
 
-Nếu Apple hiển thị trình duyệt không được hỗ trợ, hãy cập nhật **Android System WebView** và Chrome trên Play Store. Khả năng tương thích cuối cùng vẫn phụ thuộc thay đổi từ Apple.
-
-Cloud Portal là ứng dụng độc lập, không liên kết hoặc được Apple bảo trợ.
+Cloud Portal là dự án độc lập, không liên kết, không được tài trợ và không được Apple bảo trợ. iCloud, iPhone và Apple là thương hiệu của Apple Inc. Khả năng tương thích có thể thay đổi khi Apple cập nhật iCloud.com.
