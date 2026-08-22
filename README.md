@@ -1,16 +1,17 @@
 # Cloud Portal cho Android
 
-Cloud Portal 2.1 biến iCloud.com thành trải nghiệm ứng dụng trên Pixel: trang Apple chạy trong WebView riêng, cookie và Web Storage được giữ trong sandbox của app, URL cuối được khôi phục khi mở lại. Không còn chuyển sang Chrome khi dùng Photos, Drive hoặc Notes.
+Cloud Portal 2.2 biến iCloud.com thành trải nghiệm ứng dụng trên Pixel: trang Apple chạy trong WebView riêng, cookie và Web Storage được giữ trong sandbox của app, URL cuối được khôi phục khi mở lại. Không còn chuyển sang Chrome khi dùng Photos, Drive hoặc Notes.
 
 ## Chức năng
 
 - Giao diện native gồm **Trang chủ**, **iCloud**, **Tải về** và **Phiên**.
 - Mở iCloud Photos, iCloud Drive và Notes ngay bên trong app.
-- Chế độ iCloud toàn màn hình: thanh hệ thống và điều hướng app tự ẩn, điều khiển web nằm trong nút nổi có thể thu gọn.
+- Chế độ iCloud toàn màn hình: thanh hệ thống và điều hướng app tự ẩn; bottom bar gọn ở cạnh dưới cho phép quay lại, tải lại và chuyển dịch vụ nhanh mà không che thanh thao tác Select của iCloud Photos.
 - Cookie đăng nhập được ghi xuống bộ nhớ bền vững bằng `CookieManager.flush()`.
 - DOM Storage lưu trạng thái web mà iCloud.com cần; app nhớ trang Apple cuối cùng.
 - Upload bằng trình chọn tệp Android, không cấp quyền đọc toàn bộ bộ nhớ.
 - Download bằng Android Download Manager, kèm User-Agent và cookie của URL Apple khi cần xác thực.
+- ZIP tạo ra khi tải nhiều ảnh được WorkManager tự giải nén an toàn vào `Downloads/Cloud Portal/<tên gói>/`; nút **Xem ảnh** mở thẳng ảnh kết quả trong Files.
 - Danh sách tiến độ tải xuống và mở tệp đã tải ngay trong app.
 - Nút xóa đồng thời cookie, Web Storage, cache, lịch sử và phiên iCloud.
 
@@ -55,7 +56,7 @@ APK nằm tại `app/build/outputs/apk/debug/app-debug.apk`.
 ## Cách dùng
 
 1. Mở app → **Ảnh**, **Drive** hoặc tab **iCloud**.
-2. Trong chế độ toàn màn hình, chạm nút **•••** bên phải để xem domain Apple, quay lại, tải lại hoặc chuyển dịch vụ; đăng nhập và hoàn tất 2FA.
+2. Trong chế độ toàn màn hình, dùng bottom bar để xem domain Apple, quay lại, tải lại hoặc chạm nút iCloud để chuyển dịch vụ; đăng nhập và hoàn tất 2FA.
 3. Dùng giao diện iCloud.com để xem, chọn, upload hoặc download nội dung.
 4. Mở tab **Tải về** để theo dõi và mở tệp trong thư mục Downloads.
 5. Khi muốn đăng xuất hoàn toàn, mở **Phiên → Xóa cookie và đăng xuất**.

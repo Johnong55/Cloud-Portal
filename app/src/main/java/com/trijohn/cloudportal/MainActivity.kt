@@ -18,7 +18,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,7 +35,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -515,57 +513,48 @@ private fun PrivacyNote() {
 @Composable
 private fun BrowserScreen(session: ICloudWebSession, onExitBrowser: () -> Unit) {
     ImmersiveSystemBars()
-    var controlsExpanded by rememberSaveable { mutableStateOf(false) }
+    var servicesExpanded by rememberSaveable { mutableStateOf(false) }
 
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.White),
     ) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = {
-                (session.webView.parent as? ViewGroup)?.removeView(session.webView)
-                session.webView.also { session.onWebViewAttached() }
-            },
-            update = { session.onWebViewAttached() },
-        )
-
-        if (session.isLoading) {
-            LinearProgressIndicator(
-                progress = { session.progress.coerceIn(0, 100) / 100f },
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .height(3.dp),
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = {
+                    (session.webView.parent as? ViewGroup)?.removeView(session.webView)
+                    session.webView.also { session.onWebViewAttached() }
+                },
+                update = { session.onWebViewAttached() },
             )
-        }
 
-        if (controlsExpanded) {
-            FocusControlPanel(
-                modifier = Modifier.align(Alignment.BottomCenter),
-                session = session,
-                onExitBrowser = onExitBrowser,
-                onDismiss = { controlsExpanded = false },
-            )
-        } else {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .width(38.dp)
-                    .height(62.dp)
-                    .clip(RoundedCornerShape(topStart = 18.dp, bottomStart = 18.dp))
-                    .clickable { controlsExpanded = true }
-                    .semantics { contentDescription = "Mở điều khiển iCloud" },
-                color = Color(0xD91B1B1F),
-                contentColor = Color.White,
-                shadowElevation = 8.dp,
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("•••", fontSize = 15.sp, fontWeight = FontWeight.Black)
-                }
+            if (session.isLoading) {
+                LinearProgressIndicator(
+                    progress = { session.progress.coerceIn(0, 100) / 100f },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(3.dp),
+                )
             }
         }
+
+        BottomBrowserBar(
+            session = session,
+            servicesExpanded = servicesExpanded,
+            onToggleServices = { servicesExpanded = !servicesExpanded },
+            onServiceSelected = { url ->
+                servicesExpanded = false
+                session.load(url)
+            },
+            onExitBrowser = onExitBrowser,
+        )
     }
 }
 
@@ -590,76 +579,101 @@ private fun ImmersiveSystemBars() {
 }
 
 @Composable
-private fun FocusControlPanel(
+private fun BottomBrowserBar(
     modifier: Modifier = Modifier,
     session: ICloudWebSession,
+    servicesExpanded: Boolean,
+    onToggleServices: () -> Unit,
+    onServiceSelected: (String) -> Unit,
     onExitBrowser: () -> Unit,
-    onDismiss: () -> Unit,
 ) {
     Surface(
         modifier = modifier
             .navigationBarsPadding()
-            .padding(10.dp)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
             .fillMaxWidth(),
-        color = Color(0xF21B1B1F),
+        color = Color(0xF51B1B1F),
         contentColor = Color.White,
-        shape = RoundedCornerShape(24.dp),
-        shadowElevation = 16.dp,
+        shape = RoundedCornerShape(22.dp),
+        shadowElevation = 12.dp,
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(11.dp),
+            modifier = Modifier.padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (servicesExpanded) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    cloudServices.forEach { service ->
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { onServiceSelected(service.url) },
+                            color = service.accent.copy(alpha = 0.28f),
+                            contentColor = Color.White,
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Text(
+                                "${service.symbol}  ${service.name}",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 9.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FocusControl("⌂", "Về Cloud Portal", true, onExitBrowser)
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(5.dp))
                 FocusControl("‹", "Quay lại", session.canGoBack, session::goBack)
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(5.dp))
                 FocusControl("›", "Tiến tới", session.canGoForward, session::goForward)
-                Spacer(Modifier.width(7.dp))
+                Spacer(Modifier.width(5.dp))
                 FocusControl(if (session.isLoading) "×" else "↻", "Tải lại", true) {
                     if (session.isLoading) session.stopLoading() else session.reload()
                 }
-                Spacer(Modifier.width(11.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        session.pageTitle,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        "Apple • ${displayHost(session.currentUrl)}",
-                        color = Color.White.copy(alpha = 0.62f),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                    )
-                }
                 Spacer(Modifier.width(8.dp))
-                FocusControl("×", "Thu gọn điều khiển", true, onDismiss)
-            }
-
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                cloudServices.forEach { service ->
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .clickable {
-                                session.load(service.url)
-                                onDismiss()
-                            },
-                        color = service.accent.copy(alpha = 0.24f),
-                        contentColor = Color.White,
-                        shape = RoundedCornerShape(50),
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable(onClick = onToggleServices)
+                        .semantics { contentDescription = "Chuyển dịch vụ iCloud" },
+                    color = Color.White.copy(alpha = 0.13f),
+                    contentColor = Color.White,
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        Text("☁", fontSize = 18.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                activeCloudService(session.currentUrl),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                            )
+                            Text(
+                                displayHost(session.currentUrl),
+                                color = Color.White.copy(alpha = 0.58f),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                            )
+                        }
                         Text(
-                            "${service.symbol}  ${service.name}",
-                            modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp),
-                            style = MaterialTheme.typography.labelMedium,
+                            if (servicesExpanded) "⌄" else "⌃",
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                         )
                     }
@@ -678,7 +692,7 @@ private fun FocusControl(
 ) {
     Surface(
         modifier = Modifier
-            .size(40.dp)
+            .size(38.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics { contentDescription = description },
@@ -687,9 +701,16 @@ private fun FocusControl(
         shape = CircleShape,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(symbol, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+            Text(symbol, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
     }
+}
+
+private fun activeCloudService(url: String): String = when {
+    url.contains("/photos", ignoreCase = true) -> "Ảnh iCloud"
+    url.contains("/iclouddrive", ignoreCase = true) -> "iCloud Drive"
+    url.contains("/notes", ignoreCase = true) -> "Ghi chú"
+    else -> "iCloud"
 }
 
 @Composable
@@ -715,7 +736,7 @@ private fun DownloadsScreen(repository: DownloadRepository, onMessage: (String) 
             PageHeader(
                 eyebrow = "DOWNLOAD MANAGER",
                 title = "Tệp từ iCloud",
-                subtitle = "Tải nền, tiếp tục khi app đóng và lưu trong Downloads của Android.",
+                subtitle = "ZIP nhiều ảnh được tự giải nén vào Downloads/Cloud Portal, kể cả khi app chạy nền.",
             )
         }
         item {
@@ -742,7 +763,14 @@ private fun DownloadsScreen(repository: DownloadRepository, onMessage: (String) 
                     download = download,
                     onOpen = {
                         if (!repository.openDownload(download)) {
-                            onMessage("Tệp chưa sẵn sàng hoặc đã bị xóa khỏi Downloads.")
+                            onMessage("Không thể mở tệp hoặc thư mục ảnh trong Downloads.")
+                        }
+                    },
+                    onRetryExtraction = {
+                        if (repository.retryExtraction(download)) {
+                            onMessage("Đang thử giải nén lại ${download.fileName}.")
+                        } else {
+                            onMessage("Không thể thử giải nén lại tệp này.")
                         }
                     },
                 )
@@ -789,7 +817,11 @@ private fun EmptyDownloads() {
 }
 
 @Composable
-private fun DownloadCard(download: CloudDownload, onOpen: () -> Unit) {
+private fun DownloadCard(
+    download: CloudDownload,
+    onOpen: () -> Unit,
+    onRetryExtraction: () -> Unit,
+) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         shape = RoundedCornerShape(20.dp),
@@ -814,21 +846,47 @@ private fun DownloadCard(download: CloudDownload, onOpen: () -> Unit) {
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        download.state.stateLabel(),
+                        download.stateLabel(),
                         style = MaterialTheme.typography.bodySmall,
                         color = download.state.stateColor(),
                     )
                 }
-                if (download.state == DownloadState.Complete) {
-                    TextButton(onClick = onOpen) { Text("Mở", fontWeight = FontWeight.Bold) }
+                when (download.state) {
+                    DownloadState.Complete -> {
+                        TextButton(onClick = onOpen) { Text("Mở", fontWeight = FontWeight.Bold) }
+                    }
+
+                    DownloadState.Extracted -> {
+                        TextButton(onClick = onOpen) { Text("Xem ảnh", fontWeight = FontWeight.Bold) }
+                    }
+
+                    DownloadState.ExtractionFailed -> {
+                        TextButton(onClick = onRetryExtraction) { Text("Thử lại", fontWeight = FontWeight.Bold) }
+                    }
+
+                    else -> Unit
                 }
             }
-            if (download.state in setOf(DownloadState.Pending, DownloadState.Running, DownloadState.Paused)) {
+            if (
+                download.state in setOf(
+                    DownloadState.Pending,
+                    DownloadState.Running,
+                    DownloadState.Paused,
+                    DownloadState.Extracting,
+                )
+            ) {
                 val progress = download.progress
-                if (progress != null) {
+                if (progress != null && download.state != DownloadState.Extracting) {
                     LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
                     Text(
                         "${formatBytes(download.downloadedBytes)} / ${formatBytes(download.totalBytes)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (download.state == DownloadState.Extracting) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        "Đang tạo thư mục ảnh trong Downloads…",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1057,19 +1115,23 @@ private fun displayHost(url: String): String = runCatching {
     URI(url).host?.lowercase(Locale.ROOT) ?: "icloud.com"
 }.getOrDefault("icloud.com")
 
-private fun DownloadState.stateLabel(): String = when (this) {
+private fun CloudDownload.stateLabel(): String = when (state) {
     DownloadState.Pending -> "Đang chờ"
     DownloadState.Running -> "Đang tải"
     DownloadState.Paused -> "Tạm dừng"
     DownloadState.Complete -> "Đã tải xong"
+    DownloadState.Extracting -> "Đang tự động giải nén"
+    DownloadState.Extracted -> "Đã giải nén $extractedFileCount tệp"
+    DownloadState.ExtractionFailed -> "Giải nén thất bại"
     DownloadState.Failed -> "Tải thất bại"
     DownloadState.Missing -> "Không còn trên thiết bị"
 }
 
 private fun DownloadState.stateColor(): Color = when (this) {
-    DownloadState.Complete -> Color(0xFF1AA981)
-    DownloadState.Failed, DownloadState.Missing -> Color(0xFFD4515C)
+    DownloadState.Complete, DownloadState.Extracted -> Color(0xFF1AA981)
+    DownloadState.Failed, DownloadState.Missing, DownloadState.ExtractionFailed -> Color(0xFFD4515C)
     DownloadState.Paused -> Color(0xFFF0A52B)
+    DownloadState.Extracting -> Color(0xFF7B61FF)
     else -> Color(0xFF2388FF)
 }
 
