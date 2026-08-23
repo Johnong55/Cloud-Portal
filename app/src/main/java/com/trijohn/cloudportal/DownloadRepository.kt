@@ -53,6 +53,7 @@ data class CloudDownload(
     val extractedDirectory: String? = null,
     val extractedFileCount: Int = 0,
     val completedAtMillis: Long = 0L,
+    val directUri: String? = null,
 ) {
     val progress: Float?
         get() = if (totalBytes > 0L) {
@@ -67,7 +68,9 @@ class DownloadRepository(private val context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
     fun enqueue(details: WebDownloadRequest): Result<String> = runCatching {
-        require(ICloudUrlPolicy.isAllowed(details.url)) { "Liên kết tải xuống không thuộc máy chủ Apple." }
+        require(ICloudUrlPolicy.isAllowed(details.url)) {
+            "Không thể tải từ nguồn ${ICloudUrlPolicy.sourceLabel(details.url)}."
+        }
 
         val guessedName = URLUtil.guessFileName(
             details.url,
@@ -98,10 +101,90 @@ class DownloadRepository(private val context: Context) {
         fileName
     }
 
+    /** Creates a MediaStore target for an iCloud `blob:` URL streamed by the WebView bridge. */
+    internal fun beginBlobDownload(details: WebDownloadRequest): Result<BlobDownloadSink> = runCatching {
+        require(ICloudUrlPolicy.isTrustedBlob(details.url)) {
+            "Không thể tải từ nguồn ${ICloudUrlPolicy.sourceLabel(details.url)}."
+        }
+
+        val guessedName = URLUtil.guessFileName(
+            ICLOUD_DOWNLOAD_FALLBACK_URL,
+            details.contentDisposition,
+            details.mimeType,
+        )
+        val fileName = createUniqueFileName(guessedName)
+        val mimeType = details.mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+        val uri = createPendingDownload(
+            fileName = fileName,
+            relativeDirectory = "${Environment.DIRECTORY_DOWNLOADS}/",
+            mimeType = mimeType,
+        )
+        val output = context.contentResolver.openOutputStream(uri, "w")
+            ?: run {
+                context.contentResolver.delete(uri, null, null)
+                error("Không thể tạo tệp $fileName trong Downloads.")
+            }
+        val id = nextDirectDownloadId()
+        val initialRecord = DirectDownload(
+            id = id,
+            fileName = fileName,
+            mimeType = mimeType,
+            state = DirectDownloadState.Running,
+            uri = uri.toString(),
+            downloadedBytes = 0L,
+            totalBytes = details.contentLength,
+            createdAtMillis = System.currentTimeMillis(),
+            completedAtMillis = 0L,
+        )
+
+        try {
+            rememberDirectDownload(initialRecord)
+        } catch (error: Throwable) {
+            runCatching { output.close() }
+            context.contentResolver.delete(uri, null, null)
+            throw error
+        }
+
+        BlobDownloadSink(
+            fileName = fileName,
+            initialTotalBytes = details.contentLength,
+            output = output,
+            onProgress = { downloadedBytes, totalBytes ->
+                updateDirectDownload(id) {
+                    it.copy(downloadedBytes = downloadedBytes, totalBytes = totalBytes)
+                }
+            },
+            onComplete = { downloadedBytes, totalBytes ->
+                publishDownload(uri)
+                updateDirectDownload(id) {
+                    it.copy(
+                        state = DirectDownloadState.Complete,
+                        downloadedBytes = downloadedBytes,
+                        totalBytes = totalBytes,
+                        completedAtMillis = System.currentTimeMillis(),
+                    )
+                }
+            },
+            onFailure = {
+                runCatching { context.contentResolver.delete(uri, null, null) }
+                updateDirectDownload(id) {
+                    it.copy(
+                        state = DirectDownloadState.Failed,
+                        uri = "",
+                        completedAtMillis = 0L,
+                    )
+                }
+            },
+        )
+    }
+
     fun listDownloads(): List<CloudDownload> {
         recoverLegacyArchivesOnce()
+        val directDownloads = readDirectDownloads()
+            .sortedByDescending { it.createdAtMillis }
+            .map(DirectDownload::toCloudDownload)
         val saved = readSavedDownloads()
-        if (saved.isEmpty()) return emptyList()
+        if (saved.isEmpty()) return directDownloads
 
         val resultById = mutableMapOf<Long, CloudDownload>()
         val archivesToSchedule = mutableListOf<Long>()
@@ -141,7 +224,7 @@ class DownloadRepository(private val context: Context) {
 
         archivesToSchedule.forEach(::scheduleArchiveExtraction)
 
-        return saved.asReversed().map { stored ->
+        val managedDownloads = saved.asReversed().map { stored ->
             resultById[stored.id] ?: CloudDownload(
                 id = stored.id,
                 fileName = stored.fileName,
@@ -158,6 +241,7 @@ class DownloadRepository(private val context: Context) {
                 completedAtMillis = stored.completedAtMillis,
             )
         }
+        return directDownloads + managedDownloads
     }
 
     fun openDownload(download: CloudDownload): Boolean {
@@ -166,7 +250,9 @@ class DownloadRepository(private val context: Context) {
             return openExtractedDirectory(directory)
         }
 
-        val uri = manager.getUriForDownloadedFile(download.id) ?: return false
+        val uri = download.directUri?.takeIf { it.isNotBlank() }?.toUri()
+            ?: manager.getUriForDownloadedFile(download.id)
+            ?: return false
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, download.mimeType)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -207,6 +293,7 @@ class DownloadRepository(private val context: Context) {
     fun clearHistory() {
         preferences.edit {
             remove(KEY_DOWNLOADS)
+            remove(KEY_DIRECT_DOWNLOADS)
             putBoolean(KEY_ARCHIVE_RECOVERY_COMPLETE, true)
         }
     }
@@ -302,10 +389,14 @@ class DownloadRepository(private val context: Context) {
         }
     }
 
-    private fun createPendingDownload(fileName: String, relativeDirectory: String): Uri {
+    private fun createPendingDownload(
+        fileName: String,
+        relativeDirectory: String,
+        mimeType: String = ArchiveFilePolicy.mimeType(fileName),
+    ): Uri {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, ArchiveFilePolicy.mimeType(fileName))
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
             put(MediaStore.MediaColumns.RELATIVE_PATH, relativeDirectory)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
@@ -469,6 +560,69 @@ class DownloadRepository(private val context: Context) {
         preferences.edit(commit = true) { putStringSet(KEY_DOWNLOADS, records) }
     }
 
+    private fun nextDirectDownloadId(): Long = synchronized(RECORD_LOCK) {
+        val usedIds = readDirectDownloads().mapTo(mutableSetOf()) { it.id }
+        var candidate = -System.currentTimeMillis()
+        while (candidate in usedIds) candidate--
+        candidate
+    }
+
+    private fun rememberDirectDownload(download: DirectDownload) = synchronized(RECORD_LOCK) {
+        val downloads = readDirectDownloads().filterNot { it.id == download.id } + download
+        writeDirectDownloads(downloads)
+    }
+
+    private fun updateDirectDownload(
+        id: Long,
+        transform: (DirectDownload) -> DirectDownload,
+    ): DirectDownload? = synchronized(RECORD_LOCK) {
+        val downloads = readDirectDownloads().toMutableList()
+        val index = downloads.indexOfFirst { it.id == id }
+        if (index < 0) return@synchronized null
+        val updated = transform(downloads[index])
+        downloads[index] = updated
+        writeDirectDownloads(downloads)
+        updated
+    }
+
+    private fun readDirectDownloads(): List<DirectDownload> = preferences
+        .getStringSet(KEY_DIRECT_DOWNLOADS, emptySet())
+        .orEmpty()
+        .mapNotNull(::decodeDirectDownload)
+
+    private fun decodeDirectDownload(encoded: String): DirectDownload? {
+        val pieces = encoded.split(SEPARATOR)
+        if (pieces.size < 9) return null
+        return DirectDownload(
+            id = pieces[0].toLongOrNull() ?: return null,
+            fileName = Uri.decode(pieces[1]),
+            mimeType = Uri.decode(pieces[2]),
+            state = runCatching { DirectDownloadState.valueOf(pieces[3]) }.getOrNull() ?: return null,
+            uri = Uri.decode(pieces[4]),
+            downloadedBytes = pieces[5].toLongOrNull() ?: 0L,
+            totalBytes = pieces[6].toLongOrNull() ?: -1L,
+            createdAtMillis = pieces[7].toLongOrNull() ?: 0L,
+            completedAtMillis = pieces[8].toLongOrNull() ?: 0L,
+        )
+    }
+
+    private fun writeDirectDownloads(downloads: List<DirectDownload>) {
+        val records = downloads.mapTo(mutableSetOf()) { download ->
+            listOf(
+                download.id.toString(),
+                Uri.encode(download.fileName),
+                Uri.encode(download.mimeType),
+                download.state.name,
+                Uri.encode(download.uri),
+                download.downloadedBytes.toString(),
+                download.totalBytes.toString(),
+                download.createdAtMillis.toString(),
+                download.completedAtMillis.toString(),
+            ).joinToString(SEPARATOR)
+        }
+        preferences.edit(commit = true) { putStringSet(KEY_DIRECT_DOWNLOADS, records) }
+    }
+
     private fun createUniqueFileName(guessedName: String): String {
         val sanitized = ArchiveFilePolicy.sanitizeFileName(guessedName)
             .take(120)
@@ -513,6 +667,39 @@ class DownloadRepository(private val context: Context) {
         Failed,
     }
 
+    private data class DirectDownload(
+        val id: Long,
+        val fileName: String,
+        val mimeType: String,
+        val state: DirectDownloadState,
+        val uri: String,
+        val downloadedBytes: Long,
+        val totalBytes: Long,
+        val createdAtMillis: Long,
+        val completedAtMillis: Long,
+    ) {
+        fun toCloudDownload() = CloudDownload(
+            id = id,
+            fileName = fileName,
+            mimeType = mimeType,
+            state = when (state) {
+                DirectDownloadState.Running -> DownloadState.Running
+                DirectDownloadState.Complete -> DownloadState.Complete
+                DirectDownloadState.Failed -> DownloadState.Failed
+            },
+            downloadedBytes = downloadedBytes,
+            totalBytes = totalBytes,
+            completedAtMillis = completedAtMillis,
+            directUri = uri,
+        )
+    }
+
+    private enum class DirectDownloadState {
+        Running,
+        Complete,
+        Failed,
+    }
+
     private fun Int.toDownloadState(): DownloadState = when (this) {
         DownloadManager.STATUS_PENDING -> DownloadState.Pending
         DownloadManager.STATUS_RUNNING -> DownloadState.Running
@@ -525,7 +712,9 @@ class DownloadRepository(private val context: Context) {
     private companion object {
         const val PREFERENCES = "cloud_portal_downloads"
         const val KEY_DOWNLOADS = "download_records"
+        const val KEY_DIRECT_DOWNLOADS = "direct_download_records"
         const val KEY_ARCHIVE_RECOVERY_COMPLETE = "archive_recovery_v2_2_complete"
+        const val ICLOUD_DOWNLOAD_FALLBACK_URL = "https://www.icloud.com/download"
         const val SEPARATOR = "\t"
         const val EXTERNAL_STORAGE_AUTHORITY = "com.android.externalstorage.documents"
         const val COPY_BUFFER_SIZE = 64 * 1024

@@ -175,6 +175,7 @@ private fun CloudPortalApp(session: ICloudWebSession) {
                 .onSuccess { fileName -> message = "Đang tải $fileName vào thư mục Downloads." }
                 .onFailure { error -> message = error.message ?: "Không thể tải tệp từ iCloud." }
         }
+        session.onBlobDownloadRequested = downloads::beginBlobDownload
         session.onFileChooserRequested = { callback, parameters ->
             pendingFileCallback?.onReceiveValue(null)
             pendingFileCallback = callback
@@ -192,6 +193,7 @@ private fun CloudPortalApp(session: ICloudWebSession) {
             pendingFileCallback = null
             session.onMessage = null
             session.onDownloadRequested = null
+            session.onBlobDownloadRequested = null
             session.onFileChooserRequested = null
         }
     }
