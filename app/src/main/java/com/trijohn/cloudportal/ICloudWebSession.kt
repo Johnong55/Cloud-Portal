@@ -37,7 +37,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class ICloudWebSession(private val activity: Activity) {
-    val webView: WebView = WebView(activity)
+    val webView: WebView = StableSwipeWebView(activity)
 
     var currentUrl by mutableStateOf(ICLOUD_HOME)
         private set
@@ -510,6 +510,8 @@ class ICloudWebSession(private val activity: Activity) {
         currentUrl = url
         canGoBack = view.canGoBack()
         canGoForward = view.canGoForward()
+        (view as? StableSwipeWebView)?.nativePhotoPagingEnabled =
+            url.contains("/photos", ignoreCase = true)
     }
 
     /**

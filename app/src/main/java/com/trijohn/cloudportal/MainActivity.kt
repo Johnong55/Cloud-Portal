@@ -693,20 +693,17 @@ private fun BottomBrowserBar(
     Surface(
         modifier = modifier
             .navigationBarsPadding()
-            .padding(horizontal = 8.dp, vertical = 6.dp)
             .fillMaxWidth(),
-        color = Color(0xF51B1B1F),
-        contentColor = Color.White,
-        shape = RoundedCornerShape(22.dp),
-        shadowElevation = 12.dp,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
     ) {
-        Column(
-            modifier = Modifier.padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (servicesExpanded) {
+        Column {
+            AnimatedVisibility(visible = servicesExpanded) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 10.dp, top = 8.dp, end = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     cloudServices.forEach { service ->
@@ -715,8 +712,8 @@ private fun BottomBrowserBar(
                                 .weight(1f)
                                 .clip(RoundedCornerShape(14.dp))
                                 .clickable { onServiceSelected(service.url) },
-                            color = service.accent.copy(alpha = 0.28f),
-                            contentColor = Color.White,
+                            color = service.accent.copy(alpha = 0.18f),
+                            contentColor = MaterialTheme.colorScheme.onSurface,
                             shape = RoundedCornerShape(14.dp),
                         ) {
                             Text(
@@ -732,13 +729,19 @@ private fun BottomBrowserBar(
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(80.dp)
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 FocusControl("⌂", "Về Cloud Portal", true, onExitBrowser)
-                Spacer(Modifier.width(5.dp))
+                Spacer(Modifier.width(4.dp))
                 FocusControl("‹", "Quay lại", session.canGoBack, session::goBack)
-                Spacer(Modifier.width(5.dp))
+                Spacer(Modifier.width(4.dp))
                 FocusControl("›", "Tiến tới", session.canGoForward, session::goForward)
-                Spacer(Modifier.width(5.dp))
+                Spacer(Modifier.width(4.dp))
                 FocusControl(if (session.isLoading) "×" else "↻", "Tải lại", true) {
                     if (session.isLoading) session.stopLoading() else session.reload()
                 }
@@ -746,13 +749,13 @@ private fun BottomBrowserBar(
                 Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .height(40.dp)
-                        .clip(RoundedCornerShape(14.dp))
+                        .height(52.dp)
+                        .clip(RoundedCornerShape(18.dp))
                         .clickable(onClick = onToggleServices)
                         .semantics { contentDescription = "Chuyển dịch vụ iCloud" },
-                    color = Color.White.copy(alpha = 0.13f),
-                    contentColor = Color.White,
-                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    shape = RoundedCornerShape(18.dp),
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 11.dp),
@@ -769,7 +772,7 @@ private fun BottomBrowserBar(
                             )
                             Text(
                                 displayHost(session.currentUrl),
-                                color = Color.White.copy(alpha = 0.58f),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.labelSmall,
                                 maxLines = 1,
                             )
@@ -795,12 +798,20 @@ private fun FocusControl(
 ) {
     Surface(
         modifier = Modifier
-            .size(38.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics { contentDescription = description },
-        color = Color.White.copy(alpha = if (enabled) 0.13f else 0.06f),
-        contentColor = Color.White.copy(alpha = if (enabled) 1f else 0.28f),
+        color = if (enabled) {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f)
+        },
+        contentColor = if (enabled) {
+            MaterialTheme.colorScheme.onSurface
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)
+        },
         shape = CircleShape,
     ) {
         Box(contentAlignment = Alignment.Center) {
