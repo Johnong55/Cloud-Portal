@@ -2,6 +2,7 @@ package com.trijohn.cloudportal
 
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -62,6 +63,21 @@ data class CloudDownload(
             null
         }
 }
+
+enum class LocalMediaKind {
+    Image,
+    Video,
+}
+
+data class LocalMedia(
+    val uri: Uri,
+    val fileName: String,
+    val mimeType: String,
+    val kind: LocalMediaKind,
+    val sizeBytes: Long,
+    val completedAtMillis: Long,
+    val relativePath: String? = null,
+)
 
 class DownloadRepository(private val context: Context) {
     private val manager = context.getSystemService(DownloadManager::class.java)
@@ -244,6 +260,35 @@ class DownloadRepository(private val context: Context) {
         return directDownloads + managedDownloads
     }
 
+    /** Returns media created by Cloud Portal without copying it into app-private storage. */
+    fun listDownloadedMedia(): List<LocalMedia> {
+        val mediaByUri = linkedMapOf<String, LocalMedia>()
+        queryExtractedMedia().forEach { mediaByUri[it.uri.toString()] = it }
+
+        listDownloads()
+            .asSequence()
+            .filter { it.state in setOf(DownloadState.Complete, DownloadState.Extracted) }
+            .mapNotNull { download ->
+                val kind = LocalMediaPolicy.kind(download.mimeType, download.fileName) ?: return@mapNotNull null
+                val uri = download.directUri?.takeIf(String::isNotBlank)?.toUri()
+                    ?: manager.getUriForDownloadedFile(download.id)
+                    ?: return@mapNotNull null
+                LocalMedia(
+                    uri = uri,
+                    fileName = download.fileName,
+                    mimeType = LocalMediaPolicy.normalizedMimeType(download.mimeType, download.fileName),
+                    kind = kind,
+                    sizeBytes = download.downloadedBytes,
+                    completedAtMillis = download.completedAtMillis,
+                )
+            }
+            .forEach { mediaByUri.putIfAbsent(it.uri.toString(), it) }
+
+        return mediaByUri.values.sortedWith(
+            compareByDescending<LocalMedia> { it.completedAtMillis }.thenBy { it.fileName.lowercase(Locale.ROOT) },
+        )
+    }
+
     fun openDownload(download: CloudDownload): Boolean {
         if (download.state == DownloadState.Extracted) {
             val directory = download.extractedDirectory ?: return false
@@ -265,6 +310,59 @@ class DownloadRepository(private val context: Context) {
         } catch (_: SecurityException) {
             false
         }
+    }
+
+    private fun queryExtractedMedia(): List<LocalMedia> {
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.MIME_TYPE,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATE_ADDED,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+        )
+        val selection = "${MediaStore.MediaColumns.IS_PENDING} = 0 AND " +
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+        val selectionArgs = arrayOf("${Environment.DIRECTORY_DOWNLOADS}/Cloud Portal/%")
+        val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} DESC"
+        val result = mutableListOf<LocalMedia>()
+
+        runCatching {
+            context.contentResolver.query(
+                collection,
+                projection,
+                selection,
+                selectionArgs,
+                sortOrder,
+            )?.use { cursor ->
+                val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val nameIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
+                val sizeIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                val addedIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+                val modifiedIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+                val pathIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
+                while (cursor.moveToNext()) {
+                    val fileName = cursor.getString(nameIndex).orEmpty()
+                    val storedMimeType = cursor.getString(mimeIndex).orEmpty()
+                    val kind = LocalMediaPolicy.kind(storedMimeType, fileName) ?: continue
+                    val timestampSeconds = cursor.getLong(modifiedIndex).takeIf { it > 0L }
+                        ?: cursor.getLong(addedIndex)
+                    result += LocalMedia(
+                        uri = ContentUris.withAppendedId(collection, cursor.getLong(idIndex)),
+                        fileName = fileName,
+                        mimeType = LocalMediaPolicy.normalizedMimeType(storedMimeType, fileName),
+                        kind = kind,
+                        sizeBytes = cursor.getLong(sizeIndex).coerceAtLeast(0L),
+                        completedAtMillis = timestampSeconds.coerceAtLeast(0L) * 1_000L,
+                        relativePath = cursor.getString(pathIndex),
+                    )
+                }
+            }
+        }
+        return result
     }
 
     fun retryExtraction(download: CloudDownload): Boolean {

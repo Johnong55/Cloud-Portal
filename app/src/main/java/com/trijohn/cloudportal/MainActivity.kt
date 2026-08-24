@@ -69,6 +69,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -101,14 +102,20 @@ import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private lateinit var webSession: ICloudWebSession
+    private lateinit var appLockController: AppLockController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        appLockController = AppLockController(this)
         webSession = ICloudWebSession(this)
         setContent {
             CloudPortalTheme {
-                CloudPortalApp(webSession)
+                if (appLockController.isLocked) {
+                    AppLockedScreen(appLockController)
+                } else {
+                    CloudPortalApp(webSession, appLockController)
+                }
             }
         }
     }
@@ -116,6 +123,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (::webSession.isInitialized) webSession.onResume()
+        if (::appLockController.isInitialized) appLockController.onResume()
     }
 
     override fun onPause() {
@@ -123,8 +131,14 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
+    override fun onStop() {
+        if (::appLockController.isInitialized) appLockController.onStop()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         if (::webSession.isInitialized) webSession.destroy()
+        if (::appLockController.isInitialized) appLockController.destroy()
         super.onDestroy()
     }
 }
@@ -134,6 +148,11 @@ private enum class AppSection(val label: String, val symbol: String) {
     Browser("iCloud", "☁"),
     Downloads("Tải về", "↓"),
     Session("Phiên", "●"),
+}
+
+private enum class DownloadsView(val label: String) {
+    Library("Thư viện"),
+    Queue("Tiến trình"),
 }
 
 private data class CloudService(
@@ -151,7 +170,7 @@ private val cloudServices = listOf(
 )
 
 @Composable
-private fun CloudPortalApp(session: ICloudWebSession) {
+private fun CloudPortalApp(session: ICloudWebSession, appLockController: AppLockController) {
     val context = LocalContext.current
     val downloads = remember { DownloadRepository(context) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -159,6 +178,7 @@ private fun CloudPortalApp(session: ICloudWebSession) {
     val selectedSection = AppSection.valueOf(selectedSectionName)
     var message by remember { mutableStateOf<String?>(null) }
     var pendingFileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    var mediaViewer by remember { mutableStateOf<MediaViewerState?>(null) }
 
     val fileChooser = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
@@ -204,8 +224,9 @@ private fun CloudPortalApp(session: ICloudWebSession) {
         message = null
     }
 
-    BackHandler(enabled = selectedSection != AppSection.Home || session.canGoBack) {
+    BackHandler(enabled = mediaViewer != null || selectedSection != AppSection.Home || session.canGoBack) {
         when {
+            mediaViewer != null -> mediaViewer = null
             selectedSection == AppSection.Browser && session.canGoBack -> session.goBack()
             selectedSection != AppSection.Home -> selectedSectionName = AppSection.Home.name
         }
@@ -217,7 +238,7 @@ private fun CloudPortalApp(session: ICloudWebSession) {
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            if (selectedSection != AppSection.Browser) {
+            if (selectedSection != AppSection.Browser && mediaViewer == null) {
                 CloudBottomBar(selectedSection) { selectedSectionName = it.name }
             }
         },
@@ -227,7 +248,14 @@ private fun CloudPortalApp(session: ICloudWebSession) {
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            when (selectedSection) {
+            val viewer = mediaViewer
+            if (viewer != null) {
+                NativeMediaViewer(
+                    state = viewer,
+                    onClose = { mediaViewer = null },
+                    onMessage = { message = it },
+                )
+            } else when (selectedSection) {
                 AppSection.Home -> HomeScreen(
                     hasSession = session.hasStoredSession,
                     onOpenService = { url ->
@@ -242,9 +270,14 @@ private fun CloudPortalApp(session: ICloudWebSession) {
                     session = session,
                     onExitBrowser = { selectedSectionName = AppSection.Home.name },
                 )
-                AppSection.Downloads -> DownloadsScreen(downloads) { message = it }
+                AppSection.Downloads -> DownloadsScreen(
+                    repository = downloads,
+                    onOpenMedia = { mediaViewer = it },
+                    onMessage = { message = it },
+                )
                 AppSection.Session -> SessionScreen(
                     session = session,
+                    appLockController = appLockController,
                     onOpenBrowser = { selectedSectionName = AppSection.Browser.name },
                     onMessage = { message = it },
                 )
@@ -828,10 +861,67 @@ private fun activeCloudService(url: String): String = when {
 }
 
 @Composable
-private fun DownloadsScreen(repository: DownloadRepository, onMessage: (String) -> Unit) {
+private fun DownloadsScreen(
+    repository: DownloadRepository,
+    onOpenMedia: (MediaViewerState) -> Unit,
+    onMessage: (String) -> Unit,
+) {
+    var selectedViewName by rememberSaveable { mutableStateOf(DownloadsView.Library.name) }
+    val selectedView = DownloadsView.valueOf(selectedViewName)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding(),
+    ) {
+        Surface(
+            modifier = Modifier.padding(start = 20.dp, top = 14.dp, end = 20.dp, bottom = 4.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Row(modifier = Modifier.padding(4.dp)) {
+                DownloadsView.entries.forEach { view ->
+                    val selected = view == selectedView
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { selectedViewName = view.name },
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.surfaceContainerHighest
+                        } else {
+                            Color.Transparent
+                        },
+                        contentColor = if (selected) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(view.label, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        Box(modifier = Modifier.weight(1f)) {
+            when (selectedView) {
+                DownloadsView.Library -> NativeMediaLibraryScreen(repository, onOpenMedia)
+                DownloadsView.Queue -> DownloadQueueScreen(repository, onMessage)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadQueueScreen(repository: DownloadRepository, onMessage: (String) -> Unit) {
     var downloads by remember { mutableStateOf(repository.listDownloads()) }
     var refreshNow by remember { mutableIntStateOf(0) }
-    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
     LaunchedEffect(refreshNow) {
         while (true) {
@@ -842,9 +932,7 @@ private fun DownloadsScreen(repository: DownloadRepository, onMessage: (String) 
     }
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding(),
+        modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -1057,8 +1145,77 @@ private fun DownloadCard(
 }
 
 @Composable
+private fun BiometricLockCard(
+    controller: AppLockController,
+    onMessage: (String) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (controller.isEnabled) {
+                Color(0xFF6F64FF).copy(alpha = 0.12f)
+            } else {
+                MaterialTheme.colorScheme.surfaceContainer
+            },
+        ),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    modifier = Modifier.size(46.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = RoundedCornerShape(15.dp),
+                ) {
+                    Box(contentAlignment = Alignment.Center) { Text("◉", fontSize = 23.sp) }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Khóa sinh trắc học", fontWeight = FontWeight.Black)
+                    Text(
+                        if (controller.isEnabled) {
+                            "Đang bảo vệ app và màn hình Recent Apps"
+                        } else {
+                            "Yêu cầu vân tay hoặc khuôn mặt khi quay lại app"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Surface(
+                    color = if (controller.isEnabled) Color(0xFF1AA981) else Color(0xFF8A909F),
+                    shape = CircleShape,
+                    modifier = Modifier.size(9.dp),
+                ) { }
+            }
+            if (controller.isEnabled) {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { controller.disable(onMessage) },
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text("Tắt khóa", fontWeight = FontWeight.Bold)
+                }
+            } else {
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { controller.enable(onMessage) },
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text("Bật và xác nhận", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SessionScreen(
     session: ICloudWebSession,
+    appLockController: AppLockController,
     onOpenBrowser: () -> Unit,
     onMessage: (String) -> Unit,
 ) {
@@ -1103,6 +1260,12 @@ private fun SessionScreen(
                 eyebrow = "PRIVATE WEB SESSION",
                 title = "Phiên iCloud",
                 subtitle = "Kiểm soát cookie và trạng thái đăng nhập được giữ riêng trong ứng dụng.",
+            )
+        }
+        item {
+            BiometricLockCard(
+                controller = appLockController,
+                onMessage = onMessage,
             )
         }
         item {
