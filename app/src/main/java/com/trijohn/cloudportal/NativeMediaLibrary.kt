@@ -6,7 +6,6 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.net.Uri
-import android.util.Size
 import android.view.ViewGroup
 import android.widget.MediaController
 import android.widget.VideoView
@@ -343,10 +342,8 @@ private fun MediaBitmap(
     val context = LocalContext.current
     val bitmap by produceState<Bitmap?>(null, uri, requestedSize) {
         value = withContext(Dispatchers.IO) {
-            runCatching {
-                context.contentResolver.loadThumbnail(uri, Size(requestedSize, requestedSize), null)
-                    .also(Bitmap::prepareToDraw)
-            }.getOrNull()
+            MediaBitmapDecoder.decode(context.contentResolver, uri, requestedSize)
+                ?.also(Bitmap::prepareToDraw)
         }
     }
     if (bitmap == null) {

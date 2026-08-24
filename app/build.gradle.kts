@@ -11,8 +11,8 @@ android {
         applicationId = "com.trijohn.cloudportal"
         minSdk = 29
         targetSdk = 37
-        versionCode = 11
-        versionName = "2.4.0"
+        versionCode = 12
+        versionName = "2.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -57,6 +57,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.19.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.browser:browser:1.10.0")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation("androidx.webkit:webkit:1.17.0")
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("androidx.compose.foundation:foundation")
