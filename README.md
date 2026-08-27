@@ -62,7 +62,7 @@ Xem đầy đủ tại [Chính sách quyền riêng tư](PRIVACY.md).
 <details>
 <summary>Build và cài APK</summary>
 
-Yêu cầu JDK 17 và Android SDK 37.
+Yêu cầu JDK 17 và Android SDK 36.
 
 ```bash
 ./gradlew test lintDebug assembleDebug

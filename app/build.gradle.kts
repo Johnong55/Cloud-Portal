@@ -52,12 +52,14 @@ abstract class ProductionCheckTask : DefaultTask() {
 
 android {
     namespace = "com.trijohn.cloudportal"
-    compileSdk = 37
+    //noinspection GradleDependency -- API 37 is not in the stable SDK channel yet.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.trijohn.cloudportal"
         minSdk = 29
-        targetSdk = 37
+        //noinspection OldTargetApi -- API 36 is the current Google Play production target.
+        targetSdk = 36
         versionCode = 13
         versionName = "2.5.0"
 
@@ -117,12 +119,14 @@ android {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
+    // Compose 1.11.x is the newest stable line that remains compatible with API 36.
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
-    implementation("androidx.core:core-ktx:1.19.0")
+    //noinspection GradleDependency -- Core 1.19 requires the unreleased API 37 SDK.
+    implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.browser:browser:1.10.0")
     implementation("androidx.exifinterface:exifinterface:1.4.2")
