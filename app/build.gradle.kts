@@ -60,8 +60,8 @@ android {
         minSdk = 29
         //noinspection OldTargetApi -- API 36 is the current Google Play production target.
         targetSdk = 36
-        versionCode = 14
-        versionName = "2.6.0"
+        versionCode = 15
+        versionName = "2.6.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

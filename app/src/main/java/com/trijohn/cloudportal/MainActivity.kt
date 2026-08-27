@@ -11,7 +11,6 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -94,9 +93,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.trijohn.cloudportal.ui.CloudPortalTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -690,13 +686,13 @@ private fun PrivacyNote() {
 
 @Composable
 private fun BrowserScreen(session: ICloudWebSession, onExitBrowser: () -> Unit) {
-    ImmersiveSystemBars()
     var servicesExpanded by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.White),
+            .background(Color.White)
+            .statusBarsPadding(),
     ) {
         Box(
             modifier = Modifier
@@ -735,26 +731,6 @@ private fun BrowserScreen(session: ICloudWebSession, onExitBrowser: () -> Unit) 
             },
             onExitBrowser = onExitBrowser,
         )
-    }
-}
-
-@Composable
-private fun ImmersiveSystemBars() {
-    val activity = LocalActivity.current
-    DisposableEffect(activity) {
-        if (activity == null) {
-            onDispose { }
-        } else {
-            val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
-            val previousBehavior = controller.systemBarsBehavior
-            controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-            onDispose {
-                controller.show(WindowInsetsCompat.Type.systemBars())
-                controller.systemBarsBehavior = previousBehavior
-            }
-        }
     }
 }
 
