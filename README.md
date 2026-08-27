@@ -16,6 +16,7 @@ Thay vì mở trình duyệt, tìm lại trang iCloud và đăng nhập từ đ�
 - Tự động giải nén gói ZIP khi tải nhiều ảnh cùng lúc.
 - Xem ảnh và video đã tải bằng thư viện native, hỗ trợ đúng chiều EXIF, phóng to và vuốt từng ảnh.
 - Theo dõi nội dung đã tải, thời điểm hoàn tất và nhận biết tệp mới tại màn hình **Tải về**.
+- Hủy tiến trình, chia sẻ hoặc xóa tệp thật khỏi thiết bị với bước xác nhận an toàn.
 - Khóa ứng dụng bằng sinh trắc học hoặc khóa màn hình Android.
 - Chủ động xóa phiên iCloud khỏi thiết bị bất cứ lúc nào.
 

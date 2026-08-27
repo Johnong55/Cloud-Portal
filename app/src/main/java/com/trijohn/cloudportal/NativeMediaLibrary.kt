@@ -1,6 +1,7 @@
 package com.trijohn.cloudportal
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -39,9 +40,11 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -385,6 +388,7 @@ internal fun NativeMediaViewer(
     state: MediaViewerState,
     onClose: () -> Unit,
     onMessage: (String) -> Unit,
+    onDeleteRequested: (LocalMedia) -> Unit,
 ) {
     val context = LocalContext.current
     val pagerState = rememberPagerState(
@@ -392,6 +396,7 @@ internal fun NativeMediaViewer(
         pageCount = { state.media.size },
     )
     var currentImageZoomed by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<LocalMedia?>(null) }
     val currentMedia = state.media.getOrNull(pagerState.currentPage)
 
     ViewerSystemBars()
@@ -461,6 +466,10 @@ internal fun NativeMediaViewer(
                 val media = currentMedia ?: return@ViewerCircleButton
                 if (!openMediaExternally(context, media)) onMessage("Không tìm thấy ứng dụng để mở tệp.")
             }
+            Spacer(Modifier.width(8.dp))
+            ViewerCircleButton("⌫", "Xóa khỏi thiết bị") {
+                pendingDelete = currentMedia
+            }
         }
 
         currentMedia?.let { media ->
@@ -494,6 +503,27 @@ internal fun NativeMediaViewer(
                 }
             }
         }
+    }
+
+    pendingDelete?.let { media ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Xóa khỏi thiết bị?") },
+            text = { Text("${media.fileName} sẽ bị xóa vĩnh viễn khỏi Downloads.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDelete = null
+                        onDeleteRequested(media)
+                    },
+                ) {
+                    Text("Xóa", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Giữ lại") }
+            },
+        )
     }
 }
 
@@ -674,6 +704,7 @@ private fun shareMedia(context: Context, media: LocalMedia): Boolean = try {
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = media.mimeType
         putExtra(Intent.EXTRA_STREAM, media.uri)
+        clipData = ClipData.newUri(context.contentResolver, media.fileName, media.uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     context.startActivity(Intent.createChooser(intent, "Chia sẻ bằng").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

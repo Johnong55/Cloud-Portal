@@ -73,6 +73,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -99,6 +100,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.trijohn.cloudportal.ui.CloudPortalTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URI
 import java.util.Locale
@@ -192,6 +194,7 @@ private fun CloudPortalApp(session: ICloudWebSession, appLockController: AppLock
     val context = LocalContext.current
     val downloads = remember { DownloadRepository(context) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val appScope = rememberCoroutineScope()
     var selectedSectionName by rememberSaveable { mutableStateOf(AppSection.Browser.name) }
     val selectedSection = AppSection.entries.firstOrNull { it.name == selectedSectionName } ?: AppSection.Home
     var message by remember { mutableStateOf<String?>(null) }
@@ -281,6 +284,18 @@ private fun CloudPortalApp(session: ICloudWebSession, appLockController: AppLock
                     state = viewer,
                     onClose = { mediaViewer = null },
                     onMessage = { message = it },
+                    onDeleteRequested = { media ->
+                        appScope.launch {
+                            withContext(Dispatchers.IO) { downloads.deleteMedia(media) }
+                                .onSuccess {
+                                    mediaViewer = null
+                                    message = "Đã xóa ${media.fileName} khỏi thiết bị."
+                                }
+                                .onFailure { error ->
+                                    message = error.message ?: "Không thể xóa tệp này."
+                                }
+                        }
+                    },
                 )
             } else when (selectedSection) {
                 AppSection.Home -> HomeScreen(
@@ -951,6 +966,8 @@ private fun DownloadQueueScreen(repository: DownloadRepository, onMessage: (Stri
     var downloads by remember { mutableStateOf<List<CloudDownload>>(emptyList()) }
     var refreshNow by remember { mutableIntStateOf(0) }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var pendingRemoval by remember { mutableStateOf<CloudDownload?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(refreshNow) {
         while (true) {
@@ -1007,6 +1024,12 @@ private fun DownloadQueueScreen(repository: DownloadRepository, onMessage: (Stri
                             onMessage("Không thể thử giải nén lại tệp này.")
                         }
                     },
+                    onShare = {
+                        if (!repository.shareDownload(download)) {
+                            onMessage("Không thể chia sẻ tệp này.")
+                        }
+                    },
+                    onRemoveRequested = { pendingRemoval = download },
                 )
             }
             item {
@@ -1022,6 +1045,49 @@ private fun DownloadQueueScreen(repository: DownloadRepository, onMessage: (Stri
                 }
             }
         }
+    }
+
+    pendingRemoval?.let { download ->
+        val isActive = DownloadActionPolicy.isActive(download.state)
+        AlertDialog(
+            onDismissRequest = { pendingRemoval = null },
+            title = {
+                Text(if (isActive) "Hủy tải xuống?" else "Xóa khỏi thiết bị?")
+            },
+            text = {
+                Text(
+                    if (isActive) {
+                        "Cloud Portal sẽ dừng ${download.fileName} và xóa dữ liệu tải dở."
+                    } else if (download.state == DownloadState.Extracted) {
+                        "Tệp ZIP và toàn bộ ${download.extractedFileCount} tệp đã giải nén sẽ bị xóa vĩnh viễn."
+                    } else {
+                        "${download.fileName} sẽ bị xóa vĩnh viễn khỏi Downloads."
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingRemoval = null
+                        coroutineScope.launch {
+                            withContext(Dispatchers.IO) { repository.deleteDownload(download) }
+                                .onSuccess {
+                                    refreshNow++
+                                    onMessage(if (isActive) "Đã hủy tải xuống." else "Đã xóa tệp khỏi thiết bị.")
+                                }
+                                .onFailure { error ->
+                                    onMessage(error.message ?: "Không thể xóa tệp này.")
+                                }
+                        }
+                    },
+                ) {
+                    Text(if (isActive) "Hủy tải" else "Xóa", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoval = null }) { Text("Giữ lại") }
+            },
+        )
     }
 }
 
@@ -1056,6 +1122,8 @@ private fun DownloadCard(
     nowMillis: Long,
     onOpen: () -> Unit,
     onRetryExtraction: () -> Unit,
+    onShare: () -> Unit,
+    onRemoveRequested: () -> Unit,
 ) {
     val showsCompletionTime = download.state in setOf(DownloadState.Complete, DownloadState.Extracted)
     val completionLabel = if (showsCompletionTime) {
@@ -1126,21 +1194,6 @@ private fun DownloadCard(
                         )
                     }
                 }
-                when (download.state) {
-                    DownloadState.Complete -> {
-                        TextButton(onClick = onOpen) { Text("Mở", fontWeight = FontWeight.Bold) }
-                    }
-
-                    DownloadState.Extracted -> {
-                        TextButton(onClick = onOpen) { Text("Xem ảnh", fontWeight = FontWeight.Bold) }
-                    }
-
-                    DownloadState.ExtractionFailed -> {
-                        TextButton(onClick = onRetryExtraction) { Text("Thử lại", fontWeight = FontWeight.Bold) }
-                    }
-
-                    else -> Unit
-                }
             }
             if (
                 download.state in setOf(
@@ -1167,6 +1220,38 @@ private fun DownloadCard(
                     )
                 } else {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                when (download.state) {
+                    DownloadState.Complete -> {
+                        TextButton(onClick = onOpen) { Text("Mở", fontWeight = FontWeight.Bold) }
+                    }
+
+                    DownloadState.Extracted -> {
+                        TextButton(onClick = onOpen) { Text("Xem ảnh", fontWeight = FontWeight.Bold) }
+                    }
+
+                    DownloadState.ExtractionFailed -> {
+                        TextButton(onClick = onRetryExtraction) { Text("Thử lại", fontWeight = FontWeight.Bold) }
+                    }
+
+                    else -> Unit
+                }
+                if (DownloadActionPolicy.canShare(download.state)) {
+                    TextButton(onClick = onShare) {
+                        Text(if (download.state == DownloadState.Extracted) "Chia sẻ ZIP" else "Chia sẻ")
+                    }
+                }
+                TextButton(onClick = onRemoveRequested) {
+                    Text(
+                        DownloadActionPolicy.removalLabel(download.state),
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }

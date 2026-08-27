@@ -2,6 +2,7 @@ package com.trijohn.cloudportal
 
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
@@ -84,6 +85,7 @@ class DownloadRepository(private val context: Context) {
     private val manager = context.getSystemService(DownloadManager::class.java)
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val activeDirectDownloadIds = mutableSetOf<Long>()
+    private val activeDirectDownloadSinks = mutableMapOf<Long, BlobDownloadSink>()
 
     fun enqueue(details: WebDownloadRequest): Result<String> = runCatching {
         require(ICloudUrlPolicy.isAllowed(details.url)) {
@@ -165,7 +167,7 @@ class DownloadRepository(private val context: Context) {
             throw error
         }
 
-        BlobDownloadSink(
+        val sink = BlobDownloadSink(
             fileName = fileName,
             initialTotalBytes = details.contentLength,
             maximumBytes = DownloadSafetyPolicy.MAX_DIRECT_DOWNLOAD_BYTES,
@@ -186,6 +188,7 @@ class DownloadRepository(private val context: Context) {
                     )
                 }
                 synchronized(activeDirectDownloadIds) { activeDirectDownloadIds -= id }
+                synchronized(activeDirectDownloadSinks) { activeDirectDownloadSinks -= id }
             },
             onFailure = {
                 runCatching { context.contentResolver.delete(uri, null, null) }
@@ -197,8 +200,11 @@ class DownloadRepository(private val context: Context) {
                     )
                 }
                 synchronized(activeDirectDownloadIds) { activeDirectDownloadIds -= id }
+                synchronized(activeDirectDownloadSinks) { activeDirectDownloadSinks -= id }
             },
         )
+        synchronized(activeDirectDownloadSinks) { activeDirectDownloadSinks[id] = sink }
+        sink
     }
 
     fun listDownloads(): List<CloudDownload> {
@@ -317,6 +323,89 @@ class DownloadRepository(private val context: Context) {
             false
         } catch (_: SecurityException) {
             false
+        }
+    }
+
+    fun shareDownload(download: CloudDownload): Boolean {
+        val uri = download.directUri?.takeIf(String::isNotBlank)?.toUri()
+            ?: manager.getUriForDownloadedFile(download.id)
+            ?: return false
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = download.mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newUri(context.contentResolver, download.fileName, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            context.startActivity(
+                Intent.createChooser(intent, "Chia sẻ bằng").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    /** Cancels any active work, deletes its files and removes the matching history record. */
+    fun deleteDownload(download: CloudDownload): Result<Unit> = runCatching {
+        if (download.id < 0L) {
+            synchronized(activeDirectDownloadSinks) { activeDirectDownloadSinks[download.id] }?.fail()
+            download.directUri
+                ?.takeIf(String::isNotBlank)
+                ?.toUri()
+                ?.let { uri -> runCatching { context.contentResolver.delete(uri, null, null) } }
+            forgetDirectDownload(download.id)
+            synchronized(activeDirectDownloadIds) { activeDirectDownloadIds -= download.id }
+            synchronized(activeDirectDownloadSinks) { activeDirectDownloadSinks -= download.id }
+            return@runCatching
+        }
+
+        WorkManager.getInstance(context.applicationContext)
+            .cancelUniqueWork(uniqueArchiveWorkName(download.id))
+            .result
+            .get()
+        download.extractedDirectory?.let(::deleteExtractedFiles)
+        manager.remove(download.id)
+        forgetSavedDownload(download.id)
+    }
+
+    /** Deletes one item shown by the native library and reconciles its download record. */
+    fun deleteMedia(media: LocalMedia): Result<Unit> = runCatching {
+        val directDownload = readDirectDownloads().firstOrNull { it.uri == media.uri.toString() }
+        if (directDownload != null) {
+            synchronized(activeDirectDownloadSinks) { activeDirectDownloadSinks[directDownload.id] }?.fail()
+            context.contentResolver.delete(media.uri, null, null)
+            forgetDirectDownload(directDownload.id)
+            return@runCatching
+        }
+
+        val managedDownload = readSavedDownloads().firstOrNull { saved ->
+            manager.getUriForDownloadedFile(saved.id)?.toString() == media.uri.toString()
+        }
+        if (managedDownload != null) {
+            WorkManager.getInstance(context.applicationContext)
+                .cancelUniqueWork(uniqueArchiveWorkName(managedDownload.id))
+                .result
+                .get()
+            manager.remove(managedDownload.id)
+            forgetSavedDownload(managedDownload.id)
+            return@runCatching
+        }
+
+        check(context.contentResolver.delete(media.uri, null, null) > 0) {
+            "Tệp không còn tồn tại hoặc Android không cho phép xóa."
+        }
+        media.relativePath?.let { relativePath ->
+            val matchingDownload = readSavedDownloads().firstOrNull {
+                it.extractedDirectory == relativePath
+            }
+            matchingDownload?.let { saved ->
+                updateSavedDownload(saved.id) {
+                    it.copy(extractedFileCount = (it.extractedFileCount - 1).coerceAtLeast(0))
+                }
+            }
         }
     }
 
@@ -596,10 +685,31 @@ class DownloadRepository(private val context: Context) {
             .addTag("icloud-archive-extraction")
             .build()
         WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
-            "icloud-archive-$id",
+            uniqueArchiveWorkName(id),
             policy,
             request,
         )
+    }
+
+    private fun deleteExtractedFiles(relativeDirectory: String) {
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val ids = mutableListOf<Long>()
+        context.contentResolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+            arrayOf(relativeDirectory),
+            null,
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            while (cursor.moveToNext()) ids += cursor.getLong(idIndex)
+        }
+        ids.forEach { id ->
+            val uri = ContentUris.withAppendedId(collection, id)
+            check(context.contentResolver.delete(uri, null, null) > 0) {
+                "Không thể xóa toàn bộ nội dung đã giải nén."
+            }
+        }
     }
 
     private fun rememberDownload(id: Long, fileName: String, mimeType: String) {
@@ -669,6 +779,10 @@ class DownloadRepository(private val context: Context) {
         downloads[index] = updated
         writeSavedDownloads(downloads)
         updated
+    }
+
+    private fun forgetSavedDownload(id: Long) = synchronized(RECORD_LOCK) {
+        writeSavedDownloads(readSavedDownloads().filterNot { it.id == id })
     }
 
     private fun readSavedDownloads(): List<SavedDownload> = preferences
@@ -742,6 +856,10 @@ class DownloadRepository(private val context: Context) {
         downloads[index] = updated
         writeDirectDownloads(downloads)
         updated
+    }
+
+    private fun forgetDirectDownload(id: Long) = synchronized(RECORD_LOCK) {
+        writeDirectDownloads(readDirectDownloads().filterNot { it.id == id })
     }
 
     private fun readDirectDownloads(): List<DirectDownload> = preferences
@@ -880,5 +998,7 @@ class DownloadRepository(private val context: Context) {
         const val MAX_ARCHIVE_ENTRIES = 20_000
         const val MAX_ENTRY_BYTES = 8L * 1024 * 1024 * 1024
         val RECORD_LOCK = Any()
+
+        fun uniqueArchiveWorkName(id: Long) = "icloud-archive-$id"
     }
 }
