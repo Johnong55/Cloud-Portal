@@ -79,4 +79,24 @@ class BlobDownloadSinkTest {
         assertEquals(1, failures)
         assertTrue(sink.write(byteArrayOf(1)).isFailure)
     }
+
+    @Test
+    fun `rejects oversized and incomplete blob transfers`() {
+        var failures = 0
+        val sink = BlobDownloadSink(
+            fileName = "video.mov",
+            initialTotalBytes = -1L,
+            maximumBytes = 4L,
+            output = ByteArrayOutputStream(),
+            onProgress = { _, _ -> },
+            onComplete = { _, _ -> },
+            onFailure = { failures++ },
+        )
+
+        assertTrue(sink.updateTotalBytes(5L).isFailure)
+        assertTrue(sink.updateTotalBytes(4L).isSuccess)
+        assertTrue(sink.write(byteArrayOf(1, 2, 3)).isSuccess)
+        assertTrue(sink.complete().isFailure)
+        assertEquals(1, failures)
+    }
 }

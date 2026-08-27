@@ -11,6 +11,7 @@ import android.net.http.SslError
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SafeBrowsingResponse
 import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
@@ -37,7 +38,9 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 class ICloudWebSession(private val activity: Activity) {
-    val webView: WebView = StableSwipeWebView(activity)
+    private val webViewState = mutableStateOf<WebView>(StableSwipeWebView(activity))
+    val webView: WebView
+        get() = webViewState.value
 
     var currentUrl by mutableStateOf(ICLOUD_HOME)
         private set
@@ -64,17 +67,19 @@ class ICloudWebSession(private val activity: Activity) {
     private var activeBlobDownload: ActiveBlobDownload? = null
     private var blobBridgeSupported = false
     private var blobVaultRunsAtDocumentStart = false
+    private var destroyed = false
 
     init {
-        configureWebView()
+        configureWebView(webView)
         val restoredUrl = preferences.getString(KEY_LAST_URL, null)
             ?.takeIf(ICloudUrlPolicy::isAllowed)
             ?: ICLOUD_HOME
         load(restoredUrl)
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun configureWebView() {
+    // Lint cannot see the Kotlin anonymous client's override below; renderer loss is handled.
+    @SuppressLint("SetJavaScriptEnabled", "MissingOnRenderProcessGone")
+    private fun configureWebView(webView: WebView) {
         WebView.setWebContentsDebuggingEnabled(false)
 
         webView.settings.apply {
@@ -108,7 +113,7 @@ class ICloudWebSession(private val activity: Activity) {
             setAcceptThirdPartyCookies(webView, true)
         }
 
-        configureBlobDownloadBridge()
+        configureBlobDownloadBridge(webView)
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -176,6 +181,14 @@ class ICloudWebSession(private val activity: Activity) {
                 callback.backToSafety(true)
                 onMessage?.invoke("Safe Browsing đã chặn một trang không an toàn.")
             }
+
+            override fun onRenderProcessGone(
+                view: WebView,
+                detail: RenderProcessGoneDetail,
+            ): Boolean {
+                recoverFromRendererLoss(view, detail.didCrash())
+                return true
+            }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -226,20 +239,20 @@ class ICloudWebSession(private val activity: Activity) {
         }
     }
 
-    private fun configureBlobDownloadBridge() {
-        blobBridgeSupported = WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
-        if (!blobBridgeSupported) return
+    private fun configureBlobDownloadBridge(webView: WebView) {
+        blobBridgeSupported = false
+        blobVaultRunsAtDocumentStart = false
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)) return
+        blobBridgeSupported = true
 
-        blobVaultRunsAtDocumentStart = WebViewFeature.isFeatureSupported(
-            WebViewFeature.DOCUMENT_START_SCRIPT,
-        )
-        if (blobVaultRunsAtDocumentStart) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
                 webView,
                 BLOB_VAULT_SCRIPT,
                 TRUSTED_BLOB_ORIGINS,
             )
+            blobVaultRunsAtDocumentStart = true
         }
 
         WebViewCompat.addWebMessageListener(
@@ -315,7 +328,11 @@ class ICloudWebSession(private val activity: Activity) {
     ) {
         when {
             value.startsWith("size:${transfer.token}:") -> {
-                val totalBytes = value.substringAfterLast(':').toLongOrNull() ?: return
+                val totalBytes = value.substringAfterLast(':').toLongOrNull()
+                if (totalBytes == null) {
+                    failBlobDownload(transfer, "iCloud trả về kích thước tệp không hợp lệ.")
+                    return
+                }
                 runBlobOperation(view, replyProxy, transfer, acknowledge = true) {
                     transfer.sink.updateTotalBytes(totalBytes)
                 }
@@ -346,14 +363,16 @@ class ICloudWebSession(private val activity: Activity) {
                 if (activeBlobDownload?.token != transfer.token) return@post
                 result.onSuccess {
                     if (acknowledge) {
-                        replyProxy.postMessage("next:${transfer.token}")
+                        if (!postBlobReply(replyProxy, "next:${transfer.token}")) {
+                            failBlobDownload(transfer, "Kết nối tải xuống với iCloud đã bị gián đoạn.")
+                        }
                     } else {
                         activeBlobDownload = null
                         webView.keepScreenOn = false
                         onMessage?.invoke("Đã tải xong ${transfer.sink.fileName}.")
                     }
                 }.onFailure { error ->
-                    runCatching { replyProxy.postMessage("abort:${transfer.token}") }
+                    postBlobReply(replyProxy, "abort:${transfer.token}")
                     failBlobDownload(
                         transfer,
                         error.message ?: "Không thể lưu tệp từ iCloud vào Downloads.",
@@ -362,6 +381,10 @@ class ICloudWebSession(private val activity: Activity) {
             }
         }
     }
+
+    @SuppressLint("RequiresFeature")
+    private fun postBlobReply(replyProxy: JavaScriptReplyProxy, message: String): Boolean =
+        runCatching { replyProxy.postMessage(message) }.isSuccess
 
     private fun failBlobDownload(transfer: ActiveBlobDownload, reason: String) {
         if (activeBlobDownload?.token != transfer.token) return
@@ -465,10 +488,12 @@ class ICloudWebSession(private val activity: Activity) {
     }
 
     fun clearSession(onComplete: () -> Unit) {
+        if (destroyed) return
         webView.stopLoading()
         CookieManager.getInstance().removeAllCookies {
             CookieManager.getInstance().flush()
             WebStorage.getInstance().deleteAllData()
+            if (destroyed) return@removeAllCookies
             webView.clearCache(true)
             webView.clearFormData()
             webView.clearHistory()
@@ -483,15 +508,18 @@ class ICloudWebSession(private val activity: Activity) {
     }
 
     fun onResume() {
-        webView.onResume()
+        if (!destroyed) webView.onResume()
     }
 
     fun onPause() {
+        if (destroyed) return
         persistSession()
         webView.onPause()
     }
 
     fun destroy() {
+        if (destroyed) return
+        destroyed = true
         persistSession()
         webView.stopLoading()
         activeBlobDownload?.let { transfer ->
@@ -500,10 +528,45 @@ class ICloudWebSession(private val activity: Activity) {
         }
         webView.keepScreenOn = false
         blobDownloadExecutor.shutdown()
-        (webView.parent as? ViewGroup)?.removeView(webView)
-        webView.webChromeClient = null
-        webView.webViewClient = WebViewClient()
-        webView.destroy()
+        disposeWebView(webView)
+    }
+
+    private fun recoverFromRendererLoss(failedView: WebView, didCrash: Boolean) {
+        if (destroyed) {
+            disposeWebView(failedView)
+            return
+        }
+        if (failedView !== webView) {
+            disposeWebView(failedView)
+            return
+        }
+
+        activeBlobDownload?.let { transfer ->
+            activeBlobDownload = null
+            blobDownloadExecutor.execute { transfer.sink.fail() }
+        }
+        val urlToRestore = currentUrl.takeIf(ICloudUrlPolicy::isAllowed) ?: ICLOUD_HOME
+        disposeWebView(failedView)
+
+        val replacement = StableSwipeWebView(activity)
+        configureWebView(replacement)
+        webViewState.value = replacement
+        replacement.loadUrl(urlToRestore)
+        onMessage?.invoke(
+            if (didCrash) {
+                "WebView gặp sự cố và đã được khởi động lại an toàn."
+            } else {
+                "WebView đã được khôi phục sau khi hệ thống giải phóng bộ nhớ."
+            },
+        )
+    }
+
+    private fun disposeWebView(view: WebView) {
+        (view.parent as? ViewGroup)?.removeView(view)
+        view.keepScreenOn = false
+        view.stopLoading()
+        view.webChromeClient = null
+        view.destroy()
     }
 
     private fun updateNavigationState(view: WebView, url: String) {
@@ -533,6 +596,8 @@ class ICloudWebSession(private val activity: Activity) {
             activity.startActivity(Intent(Intent.ACTION_VIEW, uri))
         } catch (_: ActivityNotFoundException) {
             onMessage?.invoke("Không tìm thấy ứng dụng để mở liên kết này.")
+        } catch (_: SecurityException) {
+            onMessage?.invoke("Android đã chặn ứng dụng mở liên kết này.")
         }
     }
 

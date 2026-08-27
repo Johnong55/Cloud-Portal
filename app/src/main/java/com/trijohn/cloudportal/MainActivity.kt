@@ -72,6 +72,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -96,19 +97,27 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.trijohn.cloudportal.ui.CloudPortalTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.net.URI
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private lateinit var webSession: ICloudWebSession
     private lateinit var appLockController: AppLockController
+    private var activityResumed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         appLockController = AppLockController(this)
         webSession = ICloudWebSession(this)
+        appLockController.onLockStateChanged = { locked ->
+            if (activityResumed) {
+                if (locked) webSession.onPause() else webSession.onResume()
+            }
+        }
         setContent {
             CloudPortalTheme {
                 if (appLockController.isLocked) {
@@ -122,11 +131,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::webSession.isInitialized) webSession.onResume()
+        activityResumed = true
         if (::appLockController.isInitialized) appLockController.onResume()
+        if (::webSession.isInitialized) {
+            if (::appLockController.isInitialized && appLockController.isLocked) {
+                webSession.onPause()
+            } else {
+                webSession.onResume()
+            }
+        }
     }
 
     override fun onPause() {
+        activityResumed = false
         if (::webSession.isInitialized) webSession.onPause()
         super.onPause()
     }
@@ -137,6 +154,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        activityResumed = false
         if (::webSession.isInitialized) webSession.destroy()
         if (::appLockController.isInitialized) appLockController.destroy()
         super.onDestroy()
@@ -175,7 +193,7 @@ private fun CloudPortalApp(session: ICloudWebSession, appLockController: AppLock
     val downloads = remember { DownloadRepository(context) }
     val snackbarHostState = remember { SnackbarHostState() }
     var selectedSectionName by rememberSaveable { mutableStateOf(AppSection.Browser.name) }
-    val selectedSection = AppSection.valueOf(selectedSectionName)
+    val selectedSection = AppSection.entries.firstOrNull { it.name == selectedSectionName } ?: AppSection.Home
     var message by remember { mutableStateOf<String?>(null) }
     var pendingFileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     var mediaViewer by remember { mutableStateOf<MediaViewerState?>(null) }
@@ -184,7 +202,12 @@ private fun CloudPortalApp(session: ICloudWebSession, appLockController: AppLock
         contract = ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         val selectedFiles = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
-        pendingFileCallback?.onReceiveValue(selectedFiles)
+        if (appLockController.isLocked) {
+            pendingFileCallback?.onReceiveValue(null)
+            message = "Mở khóa Cloud Portal rồi chọn lại tệp cần tải lên."
+        } else {
+            pendingFileCallback?.onReceiveValue(selectedFiles)
+        }
         pendingFileCallback = null
     }
 
@@ -205,6 +228,10 @@ private fun CloudPortalApp(session: ICloudWebSession, appLockController: AppLock
                 pendingFileCallback?.onReceiveValue(null)
                 pendingFileCallback = null
                 message = "Không tìm thấy trình chọn tệp trên thiết bị."
+            } catch (_: SecurityException) {
+                pendingFileCallback?.onReceiveValue(null)
+                pendingFileCallback = null
+                message = "Android không cho phép mở trình chọn tệp."
             }
         }
 
@@ -661,14 +688,16 @@ private fun BrowserScreen(session: ICloudWebSession, onExitBrowser: () -> Unit) 
                 .weight(1f)
                 .fillMaxWidth(),
         ) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = {
-                    (session.webView.parent as? ViewGroup)?.removeView(session.webView)
-                    session.webView.also { session.onWebViewAttached() }
-                },
-                update = { session.onWebViewAttached() },
-            )
+            key(session.webView) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = {
+                        (session.webView.parent as? ViewGroup)?.removeView(session.webView)
+                        session.webView.also { session.onWebViewAttached() }
+                    },
+                    update = { session.onWebViewAttached() },
+                )
+            }
 
             if (session.isLoading) {
                 LinearProgressIndicator(
@@ -867,7 +896,7 @@ private fun DownloadsScreen(
     onMessage: (String) -> Unit,
 ) {
     var selectedViewName by rememberSaveable { mutableStateOf(DownloadsView.Library.name) }
-    val selectedView = DownloadsView.valueOf(selectedViewName)
+    val selectedView = DownloadsView.entries.firstOrNull { it.name == selectedViewName } ?: DownloadsView.Library
 
     Column(
         modifier = Modifier
@@ -919,13 +948,13 @@ private fun DownloadsScreen(
 
 @Composable
 private fun DownloadQueueScreen(repository: DownloadRepository, onMessage: (String) -> Unit) {
-    var downloads by remember { mutableStateOf(repository.listDownloads()) }
+    var downloads by remember { mutableStateOf<List<CloudDownload>>(emptyList()) }
     var refreshNow by remember { mutableIntStateOf(0) }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
     LaunchedEffect(refreshNow) {
         while (true) {
-            downloads = repository.listDownloads()
+            downloads = withContext(Dispatchers.IO) { repository.listDownloads() }
             nowMillis = System.currentTimeMillis()
             delay(1_500)
         }
@@ -1179,7 +1208,7 @@ private fun BiometricLockCard(
                         if (controller.isEnabled) {
                             "Đang bảo vệ app và màn hình Recent Apps"
                         } else {
-                            "Yêu cầu vân tay hoặc khuôn mặt khi quay lại app"
+                            "Yêu cầu sinh trắc học hoặc khóa màn hình khi quay lại app"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

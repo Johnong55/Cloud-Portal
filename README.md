@@ -14,8 +14,9 @@ Thay vì mở trình duyệt, tìm lại trang iCloud và đăng nhập từ đ�
 - Giữ trạng thái đăng nhập để tiếp tục công việc ở lần mở sau.
 - Tải ảnh và tệp về thiết bị mà không phải chuyển sang trình duyệt khác.
 - Tự động giải nén gói ZIP khi tải nhiều ảnh cùng lúc.
-- Chạm **Xem ảnh** để mở ngay những ảnh vừa tải trong Files.
+- Xem ảnh và video đã tải bằng thư viện native, hỗ trợ đúng chiều EXIF, phóng to và vuốt từng ảnh.
 - Theo dõi nội dung đã tải, thời điểm hoàn tất và nhận biết tệp mới tại màn hình **Tải về**.
+- Khóa ứng dụng bằng sinh trắc học hoặc khóa màn hình Android.
 - Chủ động xóa phiên iCloud khỏi thiết bị bất cứ lúc nào.
 
 ## Trải nghiệm được thiết kế cho Android
@@ -47,6 +48,8 @@ Cloud Portal không yêu cầu bạn nhập mật khẩu Apple ID vào một bi�
 
 Bạn có thể mở **Phiên → Xóa cookie và đăng xuất** để xóa trạng thái đăng nhập. Việc gỡ ứng dụng hoặc xóa dữ liệu ứng dụng trong Android cũng sẽ xóa phiên đã lưu.
 
+Xem đầy đủ tại [Chính sách quyền riêng tư](PRIVACY.md).
+
 ## Yêu cầu thiết bị
 
 - Android 10 trở lên.
@@ -67,6 +70,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 APK debug được tạo tại `app/build/outputs/apk/debug/app-debug.apk`.
+
+Quy trình ký AAB và kiểm tra trước khi phát hành nằm trong [Production release checklist](docs/RELEASE.md).
 
 </details>
 

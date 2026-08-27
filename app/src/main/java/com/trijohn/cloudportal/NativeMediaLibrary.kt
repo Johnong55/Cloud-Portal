@@ -103,18 +103,17 @@ internal fun NativeMediaLibraryScreen(
     var filterName by remember { mutableStateOf(MediaFilter.All.name) }
     var refreshKey by remember { mutableIntStateOf(0) }
     var isLoading by remember { mutableStateOf(true) }
-    val filter = MediaFilter.valueOf(filterName)
+    var hasLoaded by remember { mutableStateOf(false) }
+    val filter = MediaFilter.entries.firstOrNull { it.name == filterName } ?: MediaFilter.All
 
     LaunchedEffect(refreshKey) {
-        isLoading = true
-        media = withContext(Dispatchers.IO) { repository.listDownloadedMedia() }
-        isLoading = false
-    }
-    LaunchedEffect(Unit) {
         while (true) {
-            delay(4_000)
+            if (!hasLoaded) isLoading = true
             val latest = withContext(Dispatchers.IO) { repository.listDownloadedMedia() }
             if (latest != media) media = latest
+            hasLoaded = true
+            isLoading = false
+            delay(4_000)
         }
     }
 
@@ -284,6 +283,11 @@ private fun MediaGridItem(media: LocalMedia, onClick: () -> Unit) {
             .aspectRatio(0.88f)
             .clip(RoundedCornerShape(13.dp))
             .background(MaterialTheme.colorScheme.surfaceContainer)
+            .semantics {
+                contentDescription =
+                    "${if (media.kind == LocalMediaKind.Image) "Ảnh" else "Video"} ${media.fileName}, " +
+                    MediaDateLabels.fullTimestamp(media.completedAtMillis)
+            }
             .clickable(onClick = onClick),
     ) {
         MediaBitmap(
@@ -340,24 +344,40 @@ private fun MediaBitmap(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val bitmap by produceState<Bitmap?>(null, uri, requestedSize) {
-        value = withContext(Dispatchers.IO) {
+    val loadState by produceState<MediaBitmapLoadState>(MediaBitmapLoadState.Loading, uri, requestedSize) {
+        val bitmap = withContext(Dispatchers.IO) {
             MediaBitmapDecoder.decode(context.contentResolver, uri, requestedSize)
                 ?.also(Bitmap::prepareToDraw)
         }
+        value = bitmap?.let(MediaBitmapLoadState::Ready) ?: MediaBitmapLoadState.Failed
     }
-    if (bitmap == null) {
-        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+
+    when (val state = loadState) {
+        MediaBitmapLoadState.Loading -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
             CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
         }
-    } else {
-        Image(
-            bitmap = bitmap!!.asImageBitmap(),
+        MediaBitmapLoadState.Failed -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Text(
+                "Không thể đọc ảnh",
+                modifier = Modifier.padding(12.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall,
+                textAlign = TextAlign.Center,
+            )
+        }
+        is MediaBitmapLoadState.Ready -> Image(
+            bitmap = state.bitmap.asImageBitmap(),
             contentDescription = null,
             modifier = modifier,
             contentScale = contentScale,
         )
     }
+}
+
+private sealed interface MediaBitmapLoadState {
+    data object Loading : MediaBitmapLoadState
+    data object Failed : MediaBitmapLoadState
+    data class Ready(val bitmap: Bitmap) : MediaBitmapLoadState
 }
 
 @Composable
@@ -397,7 +417,11 @@ internal fun NativeMediaViewer(
                         if (page == pagerState.currentPage) currentImageZoomed = zoomed
                     },
                 )
-                LocalMediaKind.Video -> NativeVideoPage(media, page == pagerState.currentPage)
+                LocalMediaKind.Video -> NativeVideoPage(
+                    media = media,
+                    isCurrent = page == pagerState.currentPage,
+                    onPlaybackError = { onMessage("Không thể phát video này trên thiết bị.") },
+                )
             }
         }
 
@@ -534,10 +558,14 @@ private fun ZoomableMediaImage(
 }
 
 @Composable
-private fun NativeVideoPage(media: LocalMedia, isCurrent: Boolean) {
-    val context = LocalContext.current
+private fun NativeVideoPage(
+    media: LocalMedia,
+    isCurrent: Boolean,
+    onPlaybackError: () -> Unit,
+) {
     var player by remember(media.uri) { mutableStateOf<VideoView?>(null) }
     var isPlaying by remember(media.uri) { mutableStateOf(false) }
+    var playbackFailed by remember(media.uri) { mutableStateOf(false) }
 
     LaunchedEffect(isCurrent) {
         if (!isCurrent) {
@@ -568,12 +596,24 @@ private fun NativeVideoPage(media: LocalMedia, isCurrent: Boolean) {
                         seekTo(1)
                     }
                     setOnCompletionListener { isPlaying = false }
+                    setOnErrorListener { _, _, _ ->
+                        isPlaying = false
+                        playbackFailed = true
+                        onPlaybackError()
+                        true
+                    }
                     player = this
                 }
             },
             update = { view -> if (player !== view) player = view },
         )
-        if (!isPlaying && isCurrent) {
+        if (playbackFailed) {
+            Text(
+                "Không thể phát video này",
+                color = Color.White.copy(alpha = 0.72f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        } else if (!isPlaying && isCurrent) {
             Surface(
                 modifier = Modifier
                     .size(72.dp)

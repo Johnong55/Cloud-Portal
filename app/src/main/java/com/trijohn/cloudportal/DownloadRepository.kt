@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.os.StatFs
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.webkit.CookieManager
@@ -82,6 +83,7 @@ data class LocalMedia(
 class DownloadRepository(private val context: Context) {
     private val manager = context.getSystemService(DownloadManager::class.java)
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+    private val activeDirectDownloadIds = mutableSetOf<Long>()
 
     fun enqueue(details: WebDownloadRequest): Result<String> = runCatching {
         require(ICloudUrlPolicy.isAllowed(details.url)) {
@@ -132,7 +134,7 @@ class DownloadRepository(private val context: Context) {
         val mimeType = details.mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
         val uri = createPendingDownload(
             fileName = fileName,
-            relativeDirectory = "${Environment.DIRECTORY_DOWNLOADS}/",
+            relativeDirectory = "${Environment.DIRECTORY_DOWNLOADS}/Cloud Portal/",
             mimeType = mimeType,
         )
         val output = context.contentResolver.openOutputStream(uri, "w")
@@ -153,9 +155,11 @@ class DownloadRepository(private val context: Context) {
             completedAtMillis = 0L,
         )
 
+        synchronized(activeDirectDownloadIds) { activeDirectDownloadIds += id }
         try {
             rememberDirectDownload(initialRecord)
         } catch (error: Throwable) {
+            synchronized(activeDirectDownloadIds) { activeDirectDownloadIds -= id }
             runCatching { output.close() }
             context.contentResolver.delete(uri, null, null)
             throw error
@@ -164,6 +168,7 @@ class DownloadRepository(private val context: Context) {
         BlobDownloadSink(
             fileName = fileName,
             initialTotalBytes = details.contentLength,
+            maximumBytes = DownloadSafetyPolicy.MAX_DIRECT_DOWNLOAD_BYTES,
             output = output,
             onProgress = { downloadedBytes, totalBytes ->
                 updateDirectDownload(id) {
@@ -180,6 +185,7 @@ class DownloadRepository(private val context: Context) {
                         completedAtMillis = System.currentTimeMillis(),
                     )
                 }
+                synchronized(activeDirectDownloadIds) { activeDirectDownloadIds -= id }
             },
             onFailure = {
                 runCatching { context.contentResolver.delete(uri, null, null) }
@@ -190,11 +196,13 @@ class DownloadRepository(private val context: Context) {
                         completedAtMillis = 0L,
                     )
                 }
+                synchronized(activeDirectDownloadIds) { activeDirectDownloadIds -= id }
             },
         )
     }
 
     fun listDownloads(): List<CloudDownload> {
+        recoverInterruptedDirectDownloads()
         recoverLegacyArchivesOnce()
         val directDownloads = readDirectDownloads()
             .sortedByDescending { it.createdAtMillis }
@@ -423,6 +431,10 @@ class DownloadRepository(private val context: Context) {
         val usedNames = mutableSetOf<String>()
 
         try {
+            val extractionLimit = calculateExtractionLimit(archiveUri)
+            require(extractionLimit > 0L) {
+                "Không đủ dung lượng trống để giải nén an toàn."
+            }
             val input = context.contentResolver.openInputStream(archiveUri)
                 ?: error("Không thể mở tệp ZIP.")
             var entryCount = 0
@@ -438,6 +450,10 @@ class DownloadRepository(private val context: Context) {
 
                     entryCount++
                     require(entryCount <= MAX_ARCHIVE_ENTRIES) { "ZIP chứa quá nhiều tệp." }
+                    require(entry.size < 0L || entry.size <= MAX_ENTRY_BYTES) { "Một tệp trong ZIP quá lớn." }
+                    require(entry.size < 0L || totalBytes + entry.size <= extractionLimit) {
+                        "ZIP giải nén vượt dung lượng an toàn của thiết bị."
+                    }
                     val safeName = ArchiveFilePolicy.uniqueFileName(
                         ArchiveFilePolicy.safeEntryFileName(entry.name),
                         usedNames,
@@ -449,13 +465,16 @@ class DownloadRepository(private val context: Context) {
                     context.contentResolver.openOutputStream(outputUri, "w")?.use { output ->
                         val buffer = ByteArray(COPY_BUFFER_SIZE)
                         while (true) {
+                            check(!Thread.currentThread().isInterrupted) { "Đã dừng giải nén." }
                             val read = zip.read(buffer)
                             if (read < 0) break
                             if (read == 0) continue
                             entryBytes += read
                             totalBytes += read
                             require(entryBytes <= MAX_ENTRY_BYTES) { "Một tệp trong ZIP quá lớn." }
-                            require(totalBytes <= MAX_ARCHIVE_BYTES) { "ZIP giải nén vượt giới hạn an toàn." }
+                            require(totalBytes <= extractionLimit) {
+                                "ZIP giải nén vượt dung lượng an toàn của thiết bị."
+                            }
                             output.write(buffer, 0, read)
                         }
                     } ?: error("Không thể tạo tệp $safeName.")
@@ -506,7 +525,49 @@ class DownloadRepository(private val context: Context) {
 
     private fun publishDownload(uri: Uri) {
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-        context.contentResolver.update(uri, values, null, null)
+        check(context.contentResolver.update(uri, values, null, null) == 1) {
+            "Không thể hoàn tất tệp trong Downloads."
+        }
+    }
+
+    private fun calculateExtractionLimit(archiveUri: Uri): Long {
+        val archiveBytes = runCatching {
+            context.contentResolver.openAssetFileDescriptor(archiveUri, "r")?.use { it.length }
+        }.getOrNull()?.takeIf { it > 0L }
+        val availableBytes = runCatching {
+            StatFs(Environment.getExternalStorageDirectory().absolutePath).availableBytes
+        }.getOrDefault(0L)
+        return DownloadSafetyPolicy.extractionLimit(archiveBytes, availableBytes)
+    }
+
+    /** Marks process-interrupted blob transfers failed and removes their invisible pending rows. */
+    private fun recoverInterruptedDirectDownloads() = synchronized(RECORD_LOCK) {
+        val activeIds = synchronized(activeDirectDownloadIds) { activeDirectDownloadIds.toSet() }
+        val downloads = readDirectDownloads()
+        val interrupted = downloads.filter {
+            it.state == DirectDownloadState.Running && it.id !in activeIds
+        }
+        if (interrupted.isEmpty()) return@synchronized
+
+        interrupted.forEach { download ->
+            download.uri.takeIf(String::isNotBlank)?.toUri()?.let { uri ->
+                runCatching { context.contentResolver.delete(uri, null, null) }
+            }
+        }
+        val interruptedIds = interrupted.mapTo(mutableSetOf()) { it.id }
+        writeDirectDownloads(
+            downloads.map { download ->
+                if (download.id in interruptedIds) {
+                    download.copy(
+                        state = DirectDownloadState.Failed,
+                        uri = "",
+                        completedAtMillis = 0L,
+                    )
+                } else {
+                    download
+                }
+            },
+        )
     }
 
     private fun openExtractedDirectory(relativeDirectory: String): Boolean {
@@ -818,7 +879,6 @@ class DownloadRepository(private val context: Context) {
         const val COPY_BUFFER_SIZE = 64 * 1024
         const val MAX_ARCHIVE_ENTRIES = 20_000
         const val MAX_ENTRY_BYTES = 8L * 1024 * 1024 * 1024
-        const val MAX_ARCHIVE_BYTES = 40L * 1024 * 1024 * 1024
         val RECORD_LOCK = Any()
     }
 }

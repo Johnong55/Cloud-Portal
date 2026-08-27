@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import android.util.LruCache
 import android.util.Size
 import androidx.core.graphics.scale
 import androidx.exifinterface.media.ExifInterface
@@ -33,12 +34,24 @@ internal object ExifOrientationPolicy {
 }
 
 internal object MediaBitmapDecoder {
+    private val bitmapCache by lazy {
+        val maximumKilobytes = (Runtime.getRuntime().maxMemory() / 1_024L / 12L)
+            .coerceIn(MINIMUM_CACHE_KILOBYTES, MAXIMUM_CACHE_KILOBYTES)
+            .toInt()
+        object : LruCache<String, Bitmap>(maximumKilobytes) {
+            override fun sizeOf(key: String, value: Bitmap): Int =
+                (value.allocationByteCount / 1_024).coerceAtLeast(1)
+        }
+    }
+
     fun decode(
         resolver: ContentResolver,
         uri: Uri,
         requestedSize: Int,
     ): Bitmap? {
         val safeRequestedSize = requestedSize.coerceAtLeast(1)
+        val cacheKey = "${uri}#${safeRequestedSize}"
+        bitmapCache.get(cacheKey)?.takeUnless(Bitmap::isRecycled)?.let { return it }
         return try {
             val transform = readExifTransform(resolver, uri)
             val bounds = readBounds(resolver, uri)
@@ -49,11 +62,16 @@ internal object MediaBitmapDecoder {
             val decoded = resolver.openInputStream(uri)?.use { stream ->
                 BitmapFactory.decodeStream(stream, null, options)
             } ?: return fallbackThumbnail(resolver, uri, safeRequestedSize)
+                ?.also { bitmapCache.put(cacheKey, it) }
 
             val oriented = applyTransform(decoded, transform)
-            scaleDown(oriented, safeRequestedSize)
+            scaleDown(oriented, safeRequestedSize).also { bitmapCache.put(cacheKey, it) }
         } catch (_: Exception) {
-            fallbackThumbnail(resolver, uri, safeRequestedSize)
+            fallbackThumbnail(resolver, uri, safeRequestedSize)?.also { bitmapCache.put(cacheKey, it) }
+        } catch (_: OutOfMemoryError) {
+            bitmapCache.evictAll()
+            fallbackThumbnail(resolver, uri, safeRequestedSize.coerceAtMost(1_024))
+                ?.also { bitmapCache.put(cacheKey, it) }
         }
     }
 
@@ -120,5 +138,10 @@ internal object MediaBitmapDecoder {
         resolver.loadThumbnail(uri, Size(requestedSize, requestedSize), null)
     } catch (_: Exception) {
         null
+    } catch (_: OutOfMemoryError) {
+        null
     }
+
+    private const val MINIMUM_CACHE_KILOBYTES = 16L * 1_024L
+    private const val MAXIMUM_CACHE_KILOBYTES = 64L * 1_024L
 }

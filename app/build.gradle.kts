@@ -1,6 +1,53 @@
+import java.util.Properties
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.TaskAction
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val releaseSigningPropertiesFile = rootProject.file("keystore.properties")
+val releaseSigningProperties = Properties().apply {
+    if (releaseSigningPropertiesFile.isFile) {
+        releaseSigningPropertiesFile.inputStream().use(::load)
+    }
+}
+
+fun releaseSigningValue(propertyName: String, environmentName: String): String? =
+    providers.environmentVariable(environmentName).orNull?.takeIf(String::isNotBlank)
+        ?: releaseSigningProperties.getProperty(propertyName)?.takeIf(String::isNotBlank)
+
+val releaseStorePath = releaseSigningValue("storeFile", "CLOUD_PORTAL_STORE_FILE")
+val releaseStorePassword = releaseSigningValue("storePassword", "CLOUD_PORTAL_STORE_PASSWORD")
+val releaseKeyAlias = releaseSigningValue("keyAlias", "CLOUD_PORTAL_KEY_ALIAS")
+val releaseKeyPassword = releaseSigningValue("keyPassword", "CLOUD_PORTAL_KEY_PASSWORD")
+val releaseSigningReady = listOf(
+    releaseStorePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() } && releaseStorePath?.let { rootProject.file(it).isFile } == true
+
+abstract class ProductionCheckTask : DefaultTask() {
+    @get:Input
+    abstract val signingReady: Property<Boolean>
+
+    @get:InputFile
+    abstract val releaseBundle: RegularFileProperty
+
+    @TaskAction
+    fun verifyProductionBundle() {
+        check(signingReady.get()) {
+            "Missing production signing credentials. Copy keystore.properties.example to " +
+                "keystore.properties or provide the CLOUD_PORTAL_* environment variables."
+        }
+        check(releaseBundle.get().asFile.isFile) { "Release Android App Bundle was not generated." }
+    }
 }
 
 android {
@@ -11,10 +58,21 @@ android {
         applicationId = "com.trijohn.cloudportal"
         minSdk = 29
         targetSdk = 37
-        versionCode = 12
-        versionName = "2.4.1"
+        versionCode = 13
+        versionName = "2.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (releaseSigningReady) {
+            create("production") {
+                storeFile = rootProject.file(requireNotNull(releaseStorePath))
+                storePassword = requireNotNull(releaseStorePassword)
+                keyAlias = requireNotNull(releaseKeyAlias)
+                keyPassword = requireNotNull(releaseKeyPassword)
+            }
+        }
     }
 
     buildTypes {
@@ -24,8 +82,12 @@ android {
             isDebuggable = false
         }
         release {
+            isDebuggable = false
             isMinifyEnabled = true
             isShrinkResources = true
+            if (releaseSigningReady) {
+                signingConfig = signingConfigs.getByName("production")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -45,6 +107,12 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = true
+        warningsAsErrors = true
     }
 }
 
@@ -72,4 +140,12 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.register<ProductionCheckTask>("productionCheck") {
+    group = "verification"
+    description = "Runs release checks and verifies that the upload bundle is signed."
+    dependsOn("testDebugUnitTest", "lintRelease", "bundleRelease")
+    signingReady.set(releaseSigningReady)
+    releaseBundle.set(layout.buildDirectory.file("outputs/bundle/release/app-release.aab"))
 }

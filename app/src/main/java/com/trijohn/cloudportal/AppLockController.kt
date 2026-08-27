@@ -2,6 +2,7 @@ package com.trijohn.cloudportal
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.KeyguardManager
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.CancellationSignal
@@ -39,9 +40,12 @@ import androidx.core.content.edit
 internal class AppLockController(private val activity: Activity) {
     private val preferences = activity.getSharedPreferences(PREFERENCES, Activity.MODE_PRIVATE)
     private val biometricManager = activity.getSystemService(BiometricManager::class.java)
+    private val keyguardManager = activity.getSystemService(KeyguardManager::class.java)
     private var cancellationSignal: CancellationSignal? = null
     private var promptOpen = false
     private var lastBackgroundAt = 0L
+
+    var onLockStateChanged: ((Boolean) -> Unit)? = null
 
     var isEnabled by mutableStateOf(preferences.getBoolean(KEY_ENABLED, false))
         private set
@@ -59,7 +63,7 @@ internal class AppLockController(private val activity: Activity) {
         val awayLongEnough = lastBackgroundAt > 0L &&
             SystemClock.elapsedRealtime() - lastBackgroundAt >= LOCK_AFTER_MILLIS
         if (isLocked || awayLongEnough) {
-            isLocked = true
+            updateLockedState(true)
             requestUnlock()
         }
     }
@@ -72,11 +76,11 @@ internal class AppLockController(private val activity: Activity) {
         if (isEnabled) return
         authenticate(
             title = "Bật khóa Cloud Portal",
-            subtitle = "Xác nhận sinh trắc học để bảo vệ phiên iCloud.",
+            subtitle = "Xác nhận bằng sinh trắc học hoặc khóa màn hình để bảo vệ phiên iCloud.",
             onSuccess = {
                 preferences.edit(commit = true) { putBoolean(KEY_ENABLED, true) }
                 isEnabled = true
-                isLocked = false
+                updateLockedState(false)
                 lastError = null
                 updateSecureWindow()
                 onResult("Đã bật khóa sinh trắc học và bảo vệ màn hình Recent Apps.")
@@ -93,7 +97,7 @@ internal class AppLockController(private val activity: Activity) {
             onSuccess = {
                 preferences.edit(commit = true) { putBoolean(KEY_ENABLED, false) }
                 isEnabled = false
-                isLocked = false
+                updateLockedState(false)
                 lastError = null
                 updateSecureWindow()
                 onResult("Đã tắt khóa sinh trắc học.")
@@ -106,9 +110,9 @@ internal class AppLockController(private val activity: Activity) {
         if (!isEnabled || promptOpen) return
         authenticate(
             title = "Mở khóa Cloud Portal",
-            subtitle = "Dùng sinh trắc học để truy cập phiên iCloud trên thiết bị này.",
+            subtitle = "Dùng sinh trắc học hoặc khóa màn hình để truy cập phiên iCloud.",
             onSuccess = {
-                isLocked = false
+                updateLockedState(false)
                 lastError = null
                 lastBackgroundAt = 0L
             },
@@ -120,6 +124,7 @@ internal class AppLockController(private val activity: Activity) {
         cancellationSignal?.cancel()
         cancellationSignal = null
         promptOpen = false
+        onLockStateChanged = null
     }
 
     @SuppressLint("MissingPermission")
@@ -131,8 +136,10 @@ internal class AppLockController(private val activity: Activity) {
         onFailure: (String) -> Unit,
     ) {
         if (promptOpen) return
-        val availability = biometricManager.canAuthenticate()
-        if (availability != BiometricManager.BIOMETRIC_SUCCESS) {
+        val availability = biometricManager?.canAuthenticate()
+            ?: BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE
+        val deviceCredentialAvailable = keyguardManager?.isDeviceSecure == true
+        if (availability != BiometricManager.BIOMETRIC_SUCCESS && !deviceCredentialAvailable) {
             onFailure(availabilityMessage(availability))
             return
         }
@@ -152,29 +159,46 @@ internal class AppLockController(private val activity: Activity) {
             if (success) onSuccess() else onFailure(message ?: "Chưa xác thực sinh trắc học.")
         }
 
-        val prompt = BiometricPrompt.Builder(activity)
-            .setTitle(title)
-            .setSubtitle(subtitle)
-            .setConfirmationRequired(false)
-            .setNegativeButton("Hủy", executor) { _, _ -> finish(false, "Đã hủy xác thực.") }
-            .build()
-        prompt.authenticate(
-            signal,
-            executor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
-                    finish(true)
+        try {
+            val prompt = BiometricPrompt.Builder(activity)
+                .setTitle(title)
+                .setSubtitle(subtitle)
+                .setConfirmationRequired(false)
+                .apply {
+                    if (deviceCredentialAvailable) {
+                        setDeviceCredentialAllowed(true)
+                    } else {
+                        setNegativeButton("Hủy", executor) { _, _ -> finish(false, "Đã hủy xác thực.") }
+                    }
                 }
+                .build()
+            prompt.authenticate(
+                signal,
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
+                        finish(true)
+                    }
 
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
-                    finish(false, errString?.toString()?.takeIf(String::isNotBlank))
-                }
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                        finish(false, errString?.toString()?.takeIf(String::isNotBlank))
+                    }
 
-                override fun onAuthenticationFailed() {
-                    lastError = "Không nhận diện được. Hãy thử lại."
-                }
-            },
-        )
+                    override fun onAuthenticationFailed() {
+                        lastError = "Không nhận diện được. Hãy thử lại."
+                    }
+                },
+            )
+        } catch (error: RuntimeException) {
+            signal.cancel()
+            finish(false, error.message ?: "Không thể mở xác thực sinh trắc học.")
+        }
+    }
+
+    private fun updateLockedState(value: Boolean) {
+        if (isLocked == value) return
+        isLocked = value
+        onLockStateChanged?.invoke(value)
     }
 
     private fun updateSecureWindow() {
@@ -247,7 +271,7 @@ internal fun AppLockedScreen(controller: AppLockController) {
                 shape = RoundedCornerShape(18.dp),
             ) {
                 Text(
-                    "Mở khóa bằng sinh trắc học",
+                    "Mở khóa an toàn",
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
                     fontWeight = FontWeight.Black,
                 )

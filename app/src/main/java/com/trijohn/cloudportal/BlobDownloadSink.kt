@@ -6,6 +6,7 @@ import java.io.OutputStream
 internal class BlobDownloadSink(
     val fileName: String,
     initialTotalBytes: Long,
+    private val maximumBytes: Long = Long.MAX_VALUE,
     private val output: OutputStream,
     private val onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
     private val onComplete: (downloadedBytes: Long, totalBytes: Long) -> Unit,
@@ -19,15 +20,22 @@ internal class BlobDownloadSink(
     @Synchronized
     fun updateTotalBytes(value: Long): Result<Unit> = runCatching {
         check(!closed) { "Luồng tải xuống đã kết thúc." }
-        if (value > 0L) totalBytes = value
+        require(value in 1..maximumBytes) { "Tệp vượt giới hạn dung lượng an toàn." }
+        require(value >= downloadedBytes) { "Kích thước tệp tải xuống không hợp lệ." }
+        totalBytes = value
         onProgress(downloadedBytes, totalBytes)
     }
 
     @Synchronized
     fun write(bytes: ByteArray): Result<Unit> = runCatching {
         check(!closed) { "Luồng tải xuống đã kết thúc." }
+        val nextDownloadedBytes = Math.addExact(downloadedBytes, bytes.size.toLong())
+        require(nextDownloadedBytes <= maximumBytes) { "Tệp vượt giới hạn dung lượng an toàn." }
+        require(totalBytes <= 0L || nextDownloadedBytes <= totalBytes) {
+            "Dữ liệu tải xuống lớn hơn kích thước iCloud đã khai báo."
+        }
         output.write(bytes)
-        downloadedBytes += bytes.size
+        downloadedBytes = nextDownloadedBytes
         if (downloadedBytes - lastPersistedBytes >= PROGRESS_PERSIST_INTERVAL_BYTES) {
             lastPersistedBytes = downloadedBytes
             onProgress(downloadedBytes, totalBytes)
@@ -39,6 +47,9 @@ internal class BlobDownloadSink(
         if (closed) return Result.failure(IllegalStateException("Luồng tải xuống đã kết thúc."))
         closed = true
         return runCatching {
+            require(totalBytes <= 0L || downloadedBytes == totalBytes) {
+                "Tệp tải xuống chưa đầy đủ."
+            }
             output.flush()
             output.close()
             onComplete(downloadedBytes, totalBytes.takeIf { it > 0L } ?: downloadedBytes)
